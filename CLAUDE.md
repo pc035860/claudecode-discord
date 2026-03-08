@@ -30,6 +30,10 @@ npm run build && pm2 restart claudecode-discord
 - `/stop` - 停止當前 session
 - `/auto-approve <mode>` - 設定工具自動核准模式
 
+## Bot 行為規則（bot-rules.md）
+
+在專案根目錄放置 `bot-rules.md`，內容會透過 `systemPrompt.append` 注入到每個 Claude session。不需重啟 bot 即可更新規則（每次 session 啟動時重新讀取）。檔案不存在時優雅降級，行為與原本相同。
+
 ## 注意：settingSources 修改
 
 `src/claude/session-manager.ts` 中的 `query()` 呼叫有加入以下設定，讓 Claude 能讀取 user 和 project 層級的 CLAUDE.md：
