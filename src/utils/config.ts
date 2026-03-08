@@ -13,6 +13,8 @@ const envSchema = z.object({
     .enum(["true", "false"])
     .default("true")
     .transform((v) => v === "true"),
+  CLAUDE_MODEL: z.string().default("claude-sonnet-4-6"),
+  CLAUDE_EFFORT: z.enum(["low", "medium", "high"]).default("medium"),
 });
 
 export type Config = z.infer<typeof envSchema>;
