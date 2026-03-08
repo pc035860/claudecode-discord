@@ -110,6 +110,7 @@ class SessionManager {
         options: {
           cwd: project.project_path,
           permissionMode: "default",
+          model: "claude-sonnet-4-6",
           systemPrompt: { type: "preset", preset: "claude_code" },
           settingSources: ["user", "project"],
           ...(resumeSessionId ? { resume: resumeSessionId } : {}),
