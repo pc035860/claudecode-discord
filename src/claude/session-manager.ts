@@ -10,6 +10,7 @@ import {
 } from "../db/database.js";
 import { getConfig } from "../utils/config.js";
 import { L } from "../utils/i18n.js";
+import { loadBotRules } from "../utils/rules-loader.js";
 import {
   createToolApprovalEmbed,
   createAskUserQuestionEmbed,
@@ -104,6 +105,8 @@ class SessionManager {
       }
     }, 15_000);
 
+    const botRules = loadBotRules();
+
     try {
       const queryInstance = query({
         prompt,
@@ -112,7 +115,11 @@ class SessionManager {
           permissionMode: "default",
           model: getConfig().CLAUDE_MODEL,
           effort: getConfig().CLAUDE_EFFORT,
-          systemPrompt: { type: "preset", preset: "claude_code" },
+          systemPrompt: {
+            type: "preset",
+            preset: "claude_code",
+            ...(botRules ? { append: botRules } : {}),
+          },
           settingSources: ["user", "project"],
           ...(resumeSessionId ? { resume: resumeSessionId } : {}),
 
