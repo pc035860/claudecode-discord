@@ -8,7 +8,7 @@ dist/
 .claude-uploads/
 .vscode/
 .DS_Store
-CLAUDE.md
+
 .bot.lock
 .tray.pid
 bot.log
