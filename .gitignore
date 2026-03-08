@@ -18,3 +18,5 @@ tray/ClaudeBotTray.exe
 ClaudeBot.exe
 com.claude-discord.plist
 .tray-lang
+
+specs/handover/*
