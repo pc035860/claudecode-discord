@@ -112,6 +112,11 @@ class SessionManager {
         prompt,
         options: {
           cwd: project.project_path,
+          env: {
+            ...process.env,
+            // Prevent "nested session" error when bot is started from inside Claude Code
+            CLAUDECODE: undefined,
+          },
           permissionMode: "default",
           model: getConfig().CLAUDE_MODEL,
           effort: getConfig().CLAUDE_EFFORT,
