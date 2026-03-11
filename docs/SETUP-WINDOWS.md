@@ -149,7 +149,7 @@ npm run build
      <img src="discord-scopes.png" alt="Discord OAuth2 Scopes" width="500">
    </p>
 
-   - **BOT PERMISSIONS**: Check `Send Messages`, `Embed Links`, `Read Message History`, `Use Slash Commands`
+   - **BOT PERMISSIONS**: Check `Send Messages`, `Embed Links`, `Read Message History`, `Use Slash Commands`, `Attach Files`
 
    <p align="center">
      <img src="discord-bot-permissions.png" alt="Discord Bot Permissions" width="500">

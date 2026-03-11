@@ -21,6 +21,11 @@ npm run build && pm2 restart claudecode-discord
 > 但 **`pm2 start`（首次註冊）必須在 Claude Code 外的 terminal 執行**，
 > 否則 `CLAUDECODE=1` 會被存入 PM2，導致 SDK 拒絕啟動 nested session。
 
+## 設定文件
+
+- macOS / Linux 設定：`SETUP.md`
+- Windows 設定：`docs/SETUP-WINDOWS.md`
+
 ## Bot Commands
 
 主要 slash commands (src/bot/commands/):
@@ -33,6 +38,16 @@ npm run build && pm2 restart claudecode-discord
 ## Bot 行為規則（bot-rules.md）
 
 在專案根目錄放置 `bot-rules.md`，內容會透過 `systemPrompt.append` 注入到每個 Claude session。不需重啟 bot 即可更新規則（每次 session 啟動時重新讀取）。檔案不存在時優雅降級，行為與原本相同。
+
+## 附件上傳功能
+
+Claude 可在回應中用 `[ATTACH: /絕對路徑/檔案]` 標記檔案，Bot 會自動解析並上傳到 Discord。
+
+- 安全限制：只允許專案目錄和 `/tmp` 內的檔案（含 symlink 解析）
+- 上限 10 個附件，自動去重、批次發送
+- 相關程式碼：`output-formatter.ts`（`extractAttachments` / `sendAttachments`）
+- Bot 需要 Discord `Attach Files` 權限（見 SETUP.md）
+- 標記說明寫在 `bot-rules.md`，Claude 每次 session 啟動時讀取
 
 ## 注意：settingSources 修改
 

@@ -18,6 +18,8 @@ import {
   createStopButton,
   createCompletedButton,
   splitMessage,
+  extractAttachments,
+  sendAttachments,
   type AskQuestionData,
 } from "./output-formatter.js";
 
@@ -75,6 +77,7 @@ class SessionManager {
     // Streaming state
     let responseBuffer = "";
     let lastEditTime = 0;
+    const pendingAttachments: string[] = [];
     const stopRow = createStopButton(channelId);
     let currentMessage = await channel.send({
       content: L("⏳ Thinking...", "⏳ 생각 중..."),
@@ -319,6 +322,9 @@ class SessionManager {
           const now = Date.now();
           if (now - lastEditTime >= EDIT_INTERVAL && responseBuffer.length > 0) {
             lastEditTime = now;
+            const { cleanText, attachmentPaths } = extractAttachments(responseBuffer);
+            pendingAttachments.push(...attachmentPaths);
+            responseBuffer = cleanText;
             const chunks = splitMessage(responseBuffer);
             try {
               await currentMessage.edit({ content: chunks[0] || "...", components: [] });
@@ -346,6 +352,9 @@ class SessionManager {
 
           // Flush remaining buffer
           if (responseBuffer.length > 0) {
+            const { cleanText, attachmentPaths } = extractAttachments(responseBuffer);
+            pendingAttachments.push(...attachmentPaths);
+            responseBuffer = cleanText;
             const chunks = splitMessage(responseBuffer);
             try {
               await currentMessage.edit(chunks[0] || L("Done.", "완료."));
@@ -357,6 +366,12 @@ class SessionManager {
             }
           }
 
+          // Extract attachments from result text and merge with pending
+          const resultText = resultMsg.result ?? L("Task completed", "작업 완료");
+          const { cleanText: cleanResult, attachmentPaths: resultAttachments } = extractAttachments(resultText);
+          const allAttachments = [...pendingAttachments, ...resultAttachments];
+          await sendAttachments(channel, allAttachments, project.project_path);
+
           // Replace stop button with completed button
           try {
             await currentMessage.edit({
@@ -365,15 +380,17 @@ class SessionManager {
           } catch (e) {
             console.warn(`[complete] Failed to update completed button for ${channelId}:`, e instanceof Error ? e.message : e);
           }
-
-          // Send result embed
           const resultEmbed = createResultEmbed(
-            resultMsg.result ?? L("Task completed", "작업 완료"),
+            cleanResult || L("Task completed", "작업 완료"),
             resultMsg.total_cost_usd ?? 0,
             resultMsg.duration_ms ?? 0,
             getConfig().SHOW_COST,
           );
-          await channel.send({ embeds: [resultEmbed] });
+          try {
+            await channel.send({ embeds: [resultEmbed] });
+          } catch (e) {
+            console.warn(`[result] Failed to send result embed for ${channelId}:`, e instanceof Error ? e.message : e);
+          }
 
           updateSessionStatus(channelId, "idle");
         }

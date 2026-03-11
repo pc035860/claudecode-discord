@@ -8,6 +8,7 @@ vi.mock("../utils/i18n.js", () => ({
 import {
   formatStreamChunk,
   splitMessage,
+  extractAttachments,
   createToolApprovalEmbed,
   createResultEmbed,
   createAskUserQuestionEmbed,
@@ -120,6 +121,77 @@ describe("splitMessage", () => {
     const chunks = splitMessage(text);
     expect(chunks.length).toBe(2);
     expect(chunks[0]).toBe("a".repeat(1500));
+  });
+});
+
+// ─── extractAttachments ───
+
+describe("extractAttachments", () => {
+  it("extracts single attachment marker", () => {
+    const { cleanText, attachmentPaths } = extractAttachments(
+      "Here is the file [ATTACH: /tmp/image.png] done",
+    );
+    expect(attachmentPaths).toEqual(["/tmp/image.png"]);
+    expect(cleanText).toBe("Here is the file done");
+  });
+
+  it("extracts multiple attachment markers", () => {
+    const { cleanText, attachmentPaths } = extractAttachments(
+      "[ATTACH: /tmp/a.png] text [ATTACH: /tmp/b.jpg]",
+    );
+    expect(attachmentPaths).toEqual(["/tmp/a.png", "/tmp/b.jpg"]);
+    expect(cleanText).toBe("text");
+  });
+
+  it("removes entire bullet line when marker is the only content", () => {
+    const { cleanText, attachmentPaths } = extractAttachments(
+      "results:\n- [ATTACH: /tmp/output.csv]\ndone",
+    );
+    expect(attachmentPaths).toEqual(["/tmp/output.csv"]);
+    expect(cleanText).not.toContain("-");
+    expect(cleanText).toBe("results:\n\ndone");
+  });
+
+  it("does not leave double spaces after removal", () => {
+    const { cleanText } = extractAttachments(
+      "before [ATTACH: /tmp/x.png] after",
+    );
+    expect(cleanText).not.toContain("  ");
+    expect(cleanText).toBe("before after");
+  });
+
+  it("returns empty array when no markers present", () => {
+    const { cleanText, attachmentPaths } = extractAttachments("just text");
+    expect(attachmentPaths).toEqual([]);
+    expect(cleanText).toBe("just text");
+  });
+
+  it("handles empty string", () => {
+    const { cleanText, attachmentPaths } = extractAttachments("");
+    expect(attachmentPaths).toEqual([]);
+    expect(cleanText).toBe("");
+  });
+
+  it("handles marker-only text (result is empty)", () => {
+    const { cleanText, attachmentPaths } = extractAttachments(
+      "[ATTACH: /tmp/only.png]",
+    );
+    expect(attachmentPaths).toEqual(["/tmp/only.png"]);
+    expect(cleanText).toBe("");
+  });
+
+  it("trims whitespace around paths", () => {
+    const { attachmentPaths } = extractAttachments(
+      "[ATTACH:   /tmp/spaced.png  ]",
+    );
+    expect(attachmentPaths).toEqual(["/tmp/spaced.png"]);
+  });
+
+  it("handles paths with spaces", () => {
+    const { attachmentPaths } = extractAttachments(
+      "[ATTACH: /tmp/my file.png]",
+    );
+    expect(attachmentPaths).toEqual(["/tmp/my file.png"]);
   });
 });
 

@@ -1,4 +1,5 @@
 import {
+  AttachmentBuilder,
   EmbedBuilder,
   ActionRowBuilder,
   ButtonBuilder,
@@ -59,6 +60,95 @@ export function splitMessage(text: string): string[] {
   }
 
   return chunks;
+}
+
+export function extractAttachments(text: string): {
+  cleanText: string;
+  attachmentPaths: string[];
+} {
+  const attachmentPaths: string[] = [];
+  const cleanText = text
+    .replace(/^[ \t]*[-*]\s*\[ATTACH:\s*([^\]]+)\]\s*$/gm, (_, p) => {
+      attachmentPaths.push(p.trim());
+      return "";
+    })
+    .replace(/\s*\[ATTACH:\s*([^\]]+)\]\s*/g, (_, p) => {
+      attachmentPaths.push(p.trim());
+      return " ";
+    })
+    .replace(/  +/g, " ")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+  return { cleanText, attachmentPaths };
+}
+
+import path from "node:path";
+import fs from "node:fs";
+
+const ALLOWED_PREFIXES = ["/tmp", "/private/tmp"]; // macOS /tmp -> /private/tmp
+const MAX_ATTACHMENTS = 10;
+
+function isAllowedPath(filePath: string, projectPath?: string): boolean {
+  let resolved: string;
+  try {
+    // Resolve symlinks to prevent symlink escape
+    resolved = fs.realpathSync(filePath);
+  } catch {
+    // File doesn't exist yet or unresolvable - fall back to logical resolve
+    resolved = path.resolve(filePath);
+  }
+  const allowed = projectPath
+    ? [...ALLOWED_PREFIXES, path.resolve(projectPath)]
+    : ALLOWED_PREFIXES;
+  return allowed.some((prefix) => resolved.startsWith(prefix + "/") || resolved === prefix);
+}
+
+export async function sendAttachments(
+  channel: Pick<import("discord.js").TextChannel, "send">,
+  attachmentPaths: string[],
+  projectPath?: string,
+): Promise<void> {
+  // Deduplicate
+  const unique = [...new Set(attachmentPaths)];
+  // Enforce limit
+  const capped = unique.slice(0, MAX_ATTACHMENTS);
+  if (unique.length > MAX_ATTACHMENTS) {
+    console.warn(`[attach] Too many attachments (${unique.length}), sending first ${MAX_ATTACHMENTS}`);
+  }
+
+  // Batch into a single message (Discord allows up to 10 files per message)
+  const validFiles: AttachmentBuilder[] = [];
+  for (const filePath of capped) {
+    if (!isAllowedPath(filePath, projectPath)) {
+      console.warn(`[attach] Blocked attachment outside allowed paths: ${filePath}`);
+      await channel.send(L(
+        `⚠️ Attachment blocked (outside allowed paths): \`${filePath}\``,
+        `⚠️ 첨부 파일 차단 (路徑不在允許範圍): \`${filePath}\``,
+      ));
+      continue;
+    }
+    if (!fs.existsSync(filePath)) {
+      console.warn(`[attach] File not found: ${filePath}`);
+      await channel.send(L(
+        `⚠️ Attachment not found: \`${filePath}\``,
+        `⚠️ 첨부 파일不存在: \`${filePath}\``,
+      ));
+      continue;
+    }
+    validFiles.push(new AttachmentBuilder(filePath));
+  }
+
+  if (validFiles.length > 0) {
+    try {
+      await channel.send({ files: validFiles });
+    } catch (e) {
+      console.warn(`[attach] Failed to send attachments:`, e instanceof Error ? e.message : e);
+      await channel.send(L(
+        `⚠️ Failed to send attachment(s)`,
+        `⚠️ 첨부 파일 전송 실패`,
+      ));
+    }
+  }
 }
 
 export function createStopButton(
