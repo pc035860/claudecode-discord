@@ -131,6 +131,34 @@ class SessionManager {
     let toolUseCount = 0;
     let hasTextOutput = false;
 
+    const pendingToolBlocks = new Map<number, { name: string; inputJson: string }>();
+
+    const formatToolDetail = (name: string, input: Record<string, unknown>): string => {
+      if (name === "AskUserQuestion" && Array.isArray(input.questions)) {
+        return (input.questions as { header: string }[]).map(q => q.header).join(", ");
+      }
+      if (name === "Agent" && typeof input.description === "string") {
+        const type = typeof input.subagent_type === "string" ? `[${input.subagent_type}] ` : "";
+        return `${type}${input.description.slice(0, 80)}`;
+      }
+      if (name === "TaskUpdate" && typeof input.id === "string") {
+        const status = typeof input.status === "string" ? ` → ${input.status}` : "";
+        return `#${input.id}${status}`;
+      }
+      if (name === "TaskOutput" && typeof input.id === "string") {
+        return `#${input.id}`;
+      }
+      if (typeof input.file_path === "string") return `\`${input.file_path}\``;
+      if (typeof input.command === "string") return `\`${input.command.slice(0, 100)}\``;
+      if (typeof input.url === "string") return `${input.url.slice(0, 120)}`;
+      if (typeof input.pattern === "string") return `\`${input.pattern}\`${typeof input.path === "string" ? ` in \`${input.path}\`` : ""}`;
+      if (typeof input.query === "string") return `"${input.query.slice(0, 80)}"`;
+      if (typeof input.skill === "string") return `${input.skill}`;
+      if (typeof input.prompt === "string") return `"${input.prompt.slice(0, 80)}"`;
+      if (typeof input.description === "string") return `${input.description.slice(0, 80)}`;
+      return "";
+    };
+
     // Heartbeat timer - updates status message every 15s when no text output yet
     const heartbeatInterval = setInterval(async () => {
       if (hasTextOutput) return; // stop heartbeat once real content is streaming
@@ -195,28 +223,7 @@ class SessionManager {
               : "";
             lastActivity = `${toolLabels[toolName] ?? `Using ${toolName}`}${filePath}`;
 
-            const toolDetail = (() => {
-              if (toolName === "Agent" && typeof input.description === "string") {
-                const type = typeof input.subagent_type === "string" ? `[${input.subagent_type}] ` : "";
-                return `${type}${input.description.slice(0, 80)}`;
-              }
-              if (toolName === "TaskUpdate" && typeof input.id === "string") {
-                const status = typeof input.status === "string" ? ` → ${input.status}` : "";
-                return `#${input.id}${status}`;
-              }
-              if (toolName === "TaskOutput" && typeof input.id === "string") {
-                return `#${input.id}`;
-              }
-              if (typeof input.file_path === "string") return `\`${input.file_path}\``;
-              if (typeof input.command === "string") return `\`${input.command.slice(0, 100)}\``;
-              if (typeof input.url === "string") return `${input.url.slice(0, 120)}`;
-              if (typeof input.pattern === "string") return `\`${input.pattern}\`${typeof input.path === "string" ? ` in \`${input.path}\`` : ""}`;
-              if (typeof input.query === "string") return `"${input.query.slice(0, 80)}"`;
-              if (typeof input.skill === "string") return `${input.skill}`;
-              if (typeof input.prompt === "string") return `"${input.prompt.slice(0, 80)}"`;
-              if (typeof input.description === "string") return `${input.description.slice(0, 80)}`;
-              return "";
-            })();
+            const toolDetail = formatToolDetail(toolName, input);
 
             // Update status message if no text output yet
             if (!hasTextOutput) {
@@ -240,8 +247,6 @@ class SessionManager {
               if (questions.length === 0) {
                 return { behavior: "allow" as const, updatedInput: input };
               }
-              threadReporter?.pushTool("AskUserQuestion", questions.map(q => q.header).join(", "));
-
               const answers: Record<string, string> = {};
 
               for (let qi = 0; qi < questions.length; qi++) {
@@ -300,14 +305,12 @@ class SessionManager {
             // Auto-approve read-only tools
             const readOnlyTools = ["Read", "Glob", "Grep", "WebSearch", "WebFetch", "TodoWrite"];
             if (readOnlyTools.includes(toolName)) {
-              threadReporter?.pushTool(toolName, toolDetail);
               return { behavior: "allow" as const, updatedInput: input };
             }
 
             // Check auto-approve setting
             const currentProject = getProject(channelId);
             if (currentProject?.auto_approve) {
-              threadReporter?.pushTool(toolName, toolDetail);
               return { behavior: "allow" as const, updatedInput: input };
             }
 
@@ -340,7 +343,6 @@ class SessionManager {
                   pendingApprovals.delete(requestId);
                   updateSessionStatus(channelId, "online");
                   if (decision.behavior === "allow") {
-                    threadReporter?.pushTool(toolName, toolDetail);
                     resolve({ behavior: "allow" as const, updatedInput: input });
                   } else {
                     threadReporter?.pushTool(toolName, `${toolDetail} ❌ denied`);
@@ -378,11 +380,40 @@ class SessionManager {
           }
         }
 
-        // Handle stream events (text deltas for thread progress)
+        // Handle stream events (text deltas + tool_use tracking for thread progress)
         if (message.type === "stream_event" && "event" in message) {
-          const ev = (message as { event: { type: string; delta?: { type: string; text?: string } } }).event;
+          const ev = (message as {
+            event: {
+              type: string;
+              index?: number;
+              content_block?: { type: string; name?: string };
+              delta?: { type: string; text?: string; partial_json?: string };
+            };
+          }).event;
+
           if (ev.type === "content_block_delta" && ev.delta?.type === "text_delta" && ev.delta.text) {
             threadReporter?.pushText(ev.delta.text);
+          }
+
+          if (ev.type === "content_block_start" && ev.content_block?.type === "tool_use" && ev.content_block.name && ev.index != null) {
+            pendingToolBlocks.set(ev.index, { name: ev.content_block.name, inputJson: "" });
+          }
+
+          if (ev.type === "content_block_delta" && ev.delta?.type === "input_json_delta" && ev.delta.partial_json && ev.index != null) {
+            const block = pendingToolBlocks.get(ev.index);
+            if (block) block.inputJson += ev.delta.partial_json;
+          }
+
+          if (ev.type === "content_block_stop" && ev.index != null) {
+            const block = pendingToolBlocks.get(ev.index);
+            if (block) {
+              pendingToolBlocks.delete(ev.index);
+              let input: Record<string, unknown> = {};
+              try { input = JSON.parse(block.inputJson || "{}"); } catch (e) {
+                console.warn(`[stream-tool] Failed to parse tool input for ${block.name}:`, e instanceof Error ? e.message : e);
+              }
+              threadReporter?.pushTool(block.name, formatToolDetail(block.name, input));
+            }
           }
         }
 
@@ -486,6 +517,7 @@ class SessionManager {
         }
       }
       pendingCustomInputs.delete(channelId);
+      pendingToolBlocks.clear();
 
       // Process next queued message if any
       const queue = this.messageQueue.get(channelId);

@@ -55,8 +55,8 @@ Claude 可在回應中用 `[ATTACH: /絕對路徑/檔案]` 標記檔案，Bot �
 
 - 相關程式碼：`thread-reporter.ts`（`ThreadReporter` class）
 - **文字來源**：SDK `stream_event`（`content_block_delta` → `text_delta`），非完整 `assistant` 訊息
-- **工具來源**：`canUseTool` callback，核准/拒絕**後**才寫入（避免敏感資訊外洩）
-- 被拒絕的工具會標記 `❌ denied`，逾時標記 `⏱️ timed out`
+- **工具來源**：SDK `stream_event`（`content_block_start/delta/stop` → `tool_use`），涵蓋所有工具（含 SDK 內部自動允許的 Agent、Task 等）
+- `canUseTool` 只負責推送 `❌ denied` 和 `⏱️ timed out` 狀態標記
 - 事件每 5 秒 batch flush，連續 text delta 會合併成一條 `💬` 訊息
 - Agent tool 顯示 `[subagent_type] description`，TaskUpdate 顯示 `#id → status`
 
