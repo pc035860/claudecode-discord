@@ -161,7 +161,18 @@ class SessionManager {
               ? ` \`${(input.file_path as string).split(/[\\/]/).pop()}\``
               : "";
             lastActivity = `${toolLabels[toolName] ?? `Using ${toolName}`}${filePath}`;
-            const toolDetail = filePath || (typeof input.command === "string" ? `\`${input.command.slice(0, 80)}\`` : "");
+
+            const toolDetail = (() => {
+              if (typeof input.file_path === "string") return `\`${input.file_path}\``;
+              if (typeof input.command === "string") return `\`${input.command.slice(0, 100)}\``;
+              if (typeof input.url === "string") return `${input.url.slice(0, 120)}`;
+              if (typeof input.pattern === "string") return `\`${input.pattern}\`${typeof input.path === "string" ? ` in \`${input.path}\`` : ""}`;
+              if (typeof input.query === "string") return `"${input.query.slice(0, 80)}"`;
+              if (typeof input.skill === "string") return `${input.skill}`;
+              if (typeof input.prompt === "string") return `"${input.prompt.slice(0, 80)}"`;
+              if (typeof input.description === "string") return `${input.description.slice(0, 80)}`;
+              return "";
+            })();
 
             // Update status message if no text output yet
             if (!hasTextOutput) {
