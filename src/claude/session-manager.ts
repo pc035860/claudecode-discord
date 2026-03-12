@@ -194,6 +194,17 @@ class SessionManager {
             lastActivity = `${toolLabels[toolName] ?? `Using ${toolName}`}${filePath}`;
 
             const toolDetail = (() => {
+              if (toolName === "Agent" && typeof input.description === "string") {
+                const type = typeof input.subagent_type === "string" ? `[${input.subagent_type}] ` : "";
+                return `${type}${input.description.slice(0, 80)}`;
+              }
+              if (toolName === "TaskUpdate" && typeof input.id === "string") {
+                const status = typeof input.status === "string" ? ` → ${input.status}` : "";
+                return `#${input.id}${status}`;
+              }
+              if (toolName === "TaskOutput" && typeof input.id === "string") {
+                return `#${input.id}`;
+              }
               if (typeof input.file_path === "string") return `\`${input.file_path}\``;
               if (typeof input.command === "string") return `\`${input.command.slice(0, 100)}\``;
               if (typeof input.url === "string") return `${input.url.slice(0, 120)}`;
@@ -227,6 +238,7 @@ class SessionManager {
               if (questions.length === 0) {
                 return { behavior: "allow" as const, updatedInput: input };
               }
+              threadReporter?.pushTool("AskUserQuestion", questions.map(q => q.header).join(", "));
 
               const answers: Record<string, string> = {};
 
@@ -362,6 +374,14 @@ class SessionManager {
           }
         }
 
+        // Handle stream events (text deltas for thread progress)
+        if (message.type === "stream_event" && "event" in message) {
+          const ev = (message as { event: { type: string; delta?: { type: string; text?: string } } }).event;
+          if (ev.type === "content_block_delta" && ev.delta?.type === "text_delta" && ev.delta.text) {
+            threadReporter?.pushText(ev.delta.text);
+          }
+        }
+
         // Handle streaming text
         if (message.type === "assistant" && "content" in message) {
           const content = message.content;
@@ -370,7 +390,6 @@ class SessionManager {
               if ("text" in block && typeof block.text === "string") {
                 responseBuffer += block.text;
                 hasTextOutput = true;
-                threadReporter?.pushText(block.text);
               }
             }
           }

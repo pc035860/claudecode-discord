@@ -2,7 +2,7 @@ import type { ThreadChannel, Message } from "discord.js";
 import { MAX_DISCORD_LENGTH } from "./output-formatter.js";
 
 const FLUSH_INTERVAL = 5_000;
-const MAX_TEXT_PREVIEW = 120;
+const MAX_TEXT_PREVIEW = 200;
 
 type ProgressEvent =
   | { type: "tool"; name: string; detail: string }
@@ -33,7 +33,6 @@ export class ThreadReporter {
   pushTool(name: string, detail: string): void {
     if (!this.thread) return;
     this.buffer.push({ type: "tool", name, detail });
-    console.log(`[thread-reporter] push tool=${name} buf=${this.buffer.length}`);
   }
 
   pushText(content: string): void {
@@ -42,28 +41,33 @@ export class ThreadReporter {
   }
 
   private async doFlush(): Promise<void> {
-    if (!this.thread || this.buffer.length === 0) {
-      console.log(`[thread-reporter] doFlush skip: thread=${!!this.thread} buf=${this.buffer.length}`);
-      return;
-    }
-    console.log(`[thread-reporter] doFlush sending ${this.buffer.length} events`);
+    if (!this.thread || this.buffer.length === 0) return;
 
     const events = this.buffer.splice(0);
     const lines: string[] = [];
 
+    let textAccum = "";
+    const flushText = () => {
+      if (!textAccum) return;
+      const preview = textAccum.length > MAX_TEXT_PREVIEW
+        ? textAccum.slice(0, MAX_TEXT_PREVIEW) + "…"
+        : textAccum;
+      const oneLine = preview.replace(/\n/g, " ").trim();
+      if (oneLine) {
+        lines.push(`💬 ${oneLine}`);
+      }
+      textAccum = "";
+    };
+
     for (const ev of events) {
       if (ev.type === "tool") {
+        flushText();
         lines.push(`🔧 **${ev.name}** ${ev.detail}`);
       } else {
-        const preview = ev.content.length > MAX_TEXT_PREVIEW
-          ? ev.content.slice(0, MAX_TEXT_PREVIEW) + "…"
-          : ev.content;
-        const oneLine = preview.replace(/\n/g, " ").trim();
-        if (oneLine) {
-          lines.push(`💬 ${oneLine}`);
-        }
+        textAccum += ev.content;
       }
     }
+    flushText();
 
     if (lines.length === 0) return;
 
@@ -88,7 +92,6 @@ export class ThreadReporter {
   }
 
   async stop(): Promise<void> {
-    console.log(`[thread-reporter] stop called: buf=${this.buffer.length} flushInFlight=${!!this.flushPromise}`);
     if (this.flushTimer) {
       clearInterval(this.flushTimer);
       this.flushTimer = null;
@@ -98,7 +101,6 @@ export class ThreadReporter {
         await this.flushPromise;
       }
       await this.doFlush();
-      console.log("[thread-reporter] stop flush done");
     } catch (e) {
       console.warn("[thread-reporter] Error in stop:", e instanceof Error ? e.message : e);
     }

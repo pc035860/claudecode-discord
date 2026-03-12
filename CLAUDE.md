@@ -54,9 +54,11 @@ Claude 可在回應中用 `[ATTACH: /絕對路徑/檔案]` 標記檔案，Bot �
 設定 `THREAD_PROGRESS=true` 後，Bot 會在 Thinking 訊息上開 Discord thread，持續輸出工具呼叫和 assistant 文字的中間過程。
 
 - 相關程式碼：`thread-reporter.ts`（`ThreadReporter` class）
-- 工具呼叫在核准/拒絕**後**才寫入 thread（避免敏感資訊外洩）
+- **文字來源**：SDK `stream_event`（`content_block_delta` → `text_delta`），非完整 `assistant` 訊息
+- **工具來源**：`canUseTool` callback，核准/拒絕**後**才寫入（避免敏感資訊外洩）
 - 被拒絕的工具會標記 `❌ denied`，逾時標記 `⏱️ timed out`
-- 事件每 5 秒 batch flush 一次，統一 buffer 維持時間序
+- 事件每 5 秒 batch flush，連續 text delta 會合併成一條 `💬` 訊息
+- Agent tool 顯示 `[subagent_type] description`，TaskUpdate 顯示 `#id → status`
 
 ## 注意：settingSources 修改
 
