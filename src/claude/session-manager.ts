@@ -86,6 +86,36 @@ class SessionManager {
     });
     const EDIT_INTERVAL = 1500; // ms between edits (Discord rate limit friendly)
 
+    async function flushBuffer(force = false): Promise<void> {
+      if (responseBuffer.length === 0) return;
+      if (!force) {
+        const now = Date.now();
+        if (now - lastEditTime < EDIT_INTERVAL) return;
+      }
+
+      const { cleanText, attachmentPaths } = extractAttachments(responseBuffer);
+      pendingAttachments.push(...attachmentPaths);
+      responseBuffer = cleanText;
+
+      if (responseBuffer.length === 0) return;
+
+      const chunks = splitMessage(responseBuffer);
+      try {
+        await currentMessage.edit({ content: chunks[0] || "...", components: [] });
+        for (let i = 1; i < chunks.length; i++) {
+          currentMessage = await channel.send(chunks[i]);
+          responseBuffer = chunks.slice(i + 1).join("");
+        }
+      } catch (e) {
+        console.warn(`[flush] Failed to edit message for ${channelId}, sending new:`, e instanceof Error ? e.message : e);
+        for (const chunk of chunks) {
+          currentMessage = await channel.send(chunk);
+        }
+        responseBuffer = "";
+      }
+      lastEditTime = Date.now();
+    }
+
     // Thread progress reporter
     let threadReporter: ThreadReporter | null = null;
     if (getConfig().THREAD_PROGRESS) {
@@ -143,6 +173,7 @@ class SessionManager {
             toolName: string,
             input: Record<string, unknown>,
           ) => {
+            await flushBuffer(true);
             toolUseCount++;
 
             // Tool activity labels for Discord display
@@ -344,28 +375,7 @@ class SessionManager {
             }
           }
 
-          // Throttled message edit
-          const now = Date.now();
-          if (now - lastEditTime >= EDIT_INTERVAL && responseBuffer.length > 0) {
-            lastEditTime = now;
-            const { cleanText, attachmentPaths } = extractAttachments(responseBuffer);
-            pendingAttachments.push(...attachmentPaths);
-            responseBuffer = cleanText;
-            const chunks = splitMessage(responseBuffer);
-            try {
-              await currentMessage.edit({ content: chunks[0] || "...", components: [] });
-              // Send additional chunks as new messages
-              for (let i = 1; i < chunks.length; i++) {
-                currentMessage = await channel.send(chunks[i]);
-                responseBuffer = chunks.slice(i + 1).join("");
-              }
-            } catch (e) {
-              console.warn(`[stream] Failed to edit message for ${channelId}, sending new:`, e instanceof Error ? e.message : e);
-              currentMessage = await channel.send(
-                chunks[chunks.length - 1] || "...",
-              );
-            }
-          }
+          await flushBuffer();
         }
 
         // Handle result
@@ -376,21 +386,7 @@ class SessionManager {
             duration_ms?: number;
           };
 
-          // Flush remaining buffer
-          if (responseBuffer.length > 0) {
-            const { cleanText, attachmentPaths } = extractAttachments(responseBuffer);
-            pendingAttachments.push(...attachmentPaths);
-            responseBuffer = cleanText;
-            const chunks = splitMessage(responseBuffer);
-            try {
-              await currentMessage.edit(chunks[0] || L("Done.", "완료."));
-              for (let i = 1; i < chunks.length; i++) {
-                await channel.send(chunks[i]);
-              }
-            } catch (e) {
-              console.warn(`[flush] Failed to edit final message for ${channelId}:`, e instanceof Error ? e.message : e);
-            }
-          }
+          await flushBuffer(true);
 
           // Extract attachments from result text and merge with pending
           const resultText = resultMsg.result ?? L("Task completed", "작업 완료");
