@@ -1,5 +1,7 @@
 # Bug: 主頻道漏顯示 assistant text
 
+**狀態**: ✅ 已修復 (`acf2e97`)
+
 ## 問題描述
 
 當 Claude 在最終回應前先輸出 assistant text，接著又執行工具（如 `agent-browser close`），該 assistant text 不會顯示在主頻道的訊息中。
@@ -32,16 +34,24 @@
 - assistant text 進入 `responseBuffer`
 - 節流 timer 還沒觸發時，下一個 tool call 開始
 - `canUseTool` callback 不會觸發 buffer flush
-- 如果 tool 完成後直接進 result，result handler flush 的是最後的 buffer 狀態
+- buffer 中的文字未及時 flush 到 Discord 訊息
 
-可能的情況是 `responseBuffer` 有內容但被後續 streaming 覆蓋，或 edit 時機不對。
+## 修復方案
+
+抽出共用 `flushBuffer(force?)` helper，在三個地方統一呼叫：
+
+- `canUseTool` 入口：`await flushBuffer(true)` — 強制 flush，不等節流
+- streaming text handler：`await flushBuffer()` — 受 1.5 秒節流控制
+- result handler：`await flushBuffer(true)` — 強制 flush
+
+關鍵防護：
+- **attachment-only guard**：`extractAttachments` 後 `cleanText` 為空時直接 return，不覆蓋現有訊息
+- **edit 失敗 fallback**：統一用 `channel.send()` 補送所有 chunks
+- **multi-chunk fallback**：edit 失敗時逐一發送所有 chunks，不只最後一段
 
 ## 影響範圍
 
-- `src/claude/session-manager.ts` L321-342（streaming text handler）
-- `src/claude/session-manager.ts` L353-367（result flush）
-
-## 可能方案
-
-1. 在 `canUseTool` 入口強制 flush `responseBuffer` 到 `currentMessage`
-2. 在 result handler 確保所有累積的 text 都被正確 edit 到主訊息
+- `src/claude/session-manager.ts` L89-115（`flushBuffer` helper）
+- `src/claude/session-manager.ts` L173（`canUseTool` 入口 flush）
+- `src/claude/session-manager.ts` L375（streaming flush）
+- `src/claude/session-manager.ts` L386（result flush）
