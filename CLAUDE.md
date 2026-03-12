@@ -51,7 +51,7 @@ Claude 可在回應中用 `[ATTACH: /絕對路徑/檔案]` 標記檔案，Bot �
 
 ## Thread Progress（討論串進度）
 
-設定 `THREAD_PROGRESS=true` 後，Bot 會在 Thinking 訊息上開 Discord thread，持續輸出工具呼叫和 assistant 文字的中間過程。
+設定 `THREAD_PROGRESS=true` 後，Bot 會在 Thinking 訊息上開 Discord thread，持續輸出工具呼叫和 assistant 文字的中間過程。Thread 採用 lazy creation：只有在第一次有實際內容要輸出時才會建立，避免簡單對話產生空 thread。
 
 - 相關程式碼：`thread-reporter.ts`（`ThreadReporter` class）
 - **文字來源**：SDK `stream_event`（`content_block_delta` → `text_delta`），非完整 `assistant` 訊息

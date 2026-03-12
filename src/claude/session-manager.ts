@@ -120,7 +120,7 @@ class SessionManager {
     let threadReporter: ThreadReporter | null = null;
     if (getConfig().THREAD_PROGRESS) {
       threadReporter = new ThreadReporter(currentMessage);
-      await threadReporter.start();
+      threadReporter.start();
     }
 
     // Activity tracking for progress display

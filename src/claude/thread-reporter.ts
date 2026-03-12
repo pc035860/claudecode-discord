@@ -13,35 +13,49 @@ export class ThreadReporter {
   private buffer: ProgressEvent[] = [];
   private flushTimer: ReturnType<typeof setInterval> | null = null;
   private flushPromise: Promise<void> | null = null;
+  private active = false;
 
   constructor(private anchorMessage: Message) {}
 
-  async start(): Promise<void> {
+  start(): void {
+    this.active = true;
+    this.flushTimer = setInterval(() => this.flush(), FLUSH_INTERVAL);
+  }
+
+  pushTool(name: string, detail: string): void {
+    if (!this.active) return;
+    this.buffer.push({ type: "tool", name, detail });
+  }
+
+  pushText(content: string): void {
+    if (!this.active) return;
+    this.buffer.push({ type: "text", content });
+  }
+
+  private async ensureThread(): Promise<ThreadChannel | null> {
+    if (this.thread) return this.thread;
     try {
       this.thread = await this.anchorMessage.startThread({
         name: "Progress",
         autoArchiveDuration: 60,
       });
+      return this.thread;
     } catch (e) {
       console.warn("[thread-reporter] Failed to create thread:", e instanceof Error ? e.message : e);
-      return;
+      this.active = false;
+      this.buffer.length = 0;
+      if (this.flushTimer) {
+        clearInterval(this.flushTimer);
+        this.flushTimer = null;
+      }
+      return null;
     }
-
-    this.flushTimer = setInterval(() => this.flush(), FLUSH_INTERVAL);
-  }
-
-  pushTool(name: string, detail: string): void {
-    if (!this.thread) return;
-    this.buffer.push({ type: "tool", name, detail });
-  }
-
-  pushText(content: string): void {
-    if (!this.thread) return;
-    this.buffer.push({ type: "text", content });
   }
 
   private async doFlush(): Promise<void> {
-    if (!this.thread || this.buffer.length === 0) return;
+    if (!this.active || this.buffer.length === 0) return;
+    const thread = await this.ensureThread();
+    if (!thread) return;
 
     const events = this.buffer.splice(0);
     const lines: string[] = [];
@@ -76,7 +90,7 @@ export class ThreadReporter {
       msg = msg.slice(0, MAX_DISCORD_LENGTH) + "\n…";
     }
 
-    await this.thread.send({ content: msg, allowedMentions: { parse: [] } });
+    await thread.send({ content: msg, allowedMentions: { parse: [] } });
   }
 
   async flush(): Promise<void> {
@@ -104,5 +118,6 @@ export class ThreadReporter {
     } catch (e) {
       console.warn("[thread-reporter] Error in stop:", e instanceof Error ? e.message : e);
     }
+    this.active = false;
   }
 }
