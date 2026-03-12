@@ -11,6 +11,7 @@ import {
 import { getConfig } from "../utils/config.js";
 import { L } from "../utils/i18n.js";
 import { loadBotRules } from "../utils/rules-loader.js";
+import { ThreadReporter } from "./thread-reporter.js";
 import {
   createToolApprovalEmbed,
   createAskUserQuestionEmbed,
@@ -85,6 +86,13 @@ class SessionManager {
     });
     const EDIT_INTERVAL = 1500; // ms between edits (Discord rate limit friendly)
 
+    // Thread progress reporter
+    let threadReporter: ThreadReporter | null = null;
+    if (getConfig().THREAD_PROGRESS) {
+      threadReporter = new ThreadReporter(currentMessage);
+      await threadReporter.start();
+    }
+
     // Activity tracking for progress display
     const startTime = Date.now();
     let lastActivity = L("Thinking...", "생각 중...");
@@ -153,6 +161,7 @@ class SessionManager {
               ? ` \`${(input.file_path as string).split(/[\\/]/).pop()}\``
               : "";
             lastActivity = `${toolLabels[toolName] ?? `Using ${toolName}`}${filePath}`;
+            const toolDetail = filePath || (typeof input.command === "string" ? `\`${input.command.slice(0, 80)}\`` : "");
 
             // Update status message if no text output yet
             if (!hasTextOutput) {
@@ -234,12 +243,14 @@ class SessionManager {
             // Auto-approve read-only tools
             const readOnlyTools = ["Read", "Glob", "Grep", "WebSearch", "WebFetch", "TodoWrite"];
             if (readOnlyTools.includes(toolName)) {
+              threadReporter?.pushTool(toolName, toolDetail);
               return { behavior: "allow" as const, updatedInput: input };
             }
 
             // Check auto-approve setting
             const currentProject = getProject(channelId);
             if (currentProject?.auto_approve) {
+              threadReporter?.pushTool(toolName, toolDetail);
               return { behavior: "allow" as const, updatedInput: input };
             }
 
@@ -262,6 +273,7 @@ class SessionManager {
               const timeout = setTimeout(() => {
                 pendingApprovals.delete(requestId);
                 updateSessionStatus(channelId, "online");
+                threadReporter?.pushTool(toolName, `${toolDetail} ⏱️ timed out`);
                 resolve({ behavior: "deny" as const, message: "Approval timed out" });
               }, 5 * 60 * 1000);
 
@@ -270,11 +282,13 @@ class SessionManager {
                   clearTimeout(timeout);
                   pendingApprovals.delete(requestId);
                   updateSessionStatus(channelId, "online");
-                  resolve(
-                    decision.behavior === "allow"
-                      ? { behavior: "allow" as const, updatedInput: input }
-                      : { behavior: "deny" as const, message: decision.message ?? "Denied by user" },
-                  );
+                  if (decision.behavior === "allow") {
+                    threadReporter?.pushTool(toolName, toolDetail);
+                    resolve({ behavior: "allow" as const, updatedInput: input });
+                  } else {
+                    threadReporter?.pushTool(toolName, `${toolDetail} ❌ denied`);
+                    resolve({ behavior: "deny" as const, message: decision.message ?? "Denied by user" });
+                  }
                 },
                 channelId,
               });
@@ -314,6 +328,7 @@ class SessionManager {
               if ("text" in block && typeof block.text === "string") {
                 responseBuffer += block.text;
                 hasTextOutput = true;
+                threadReporter?.pushText(block.text);
               }
             }
           }
@@ -424,6 +439,7 @@ class SessionManager {
       updateSessionStatus(channelId, "offline");
     } finally {
       clearInterval(heartbeatInterval);
+      await threadReporter?.stop();
       this.sessions.delete(channelId);
 
       // Clean up any pending approvals/questions for this channel

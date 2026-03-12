@@ -15,6 +15,10 @@ const envSchema = z.object({
     .transform((v) => v === "true"),
   CLAUDE_MODEL: z.string().default("claude-sonnet-4-6"),
   CLAUDE_EFFORT: z.enum(["low", "medium", "high"]).default("medium"),
+  THREAD_PROGRESS: z
+    .enum(["true", "false"])
+    .default("false")
+    .transform((v) => v === "true"),
 });
 
 export type Config = z.infer<typeof envSchema>;

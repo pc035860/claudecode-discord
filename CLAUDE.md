@@ -49,6 +49,15 @@ Claude 可在回應中用 `[ATTACH: /絕對路徑/檔案]` 標記檔案，Bot �
 - Bot 需要 Discord `Attach Files` 權限（見 SETUP.md）
 - 標記說明寫在 `bot-rules.md`，Claude 每次 session 啟動時讀取
 
+## Thread Progress（討論串進度）
+
+設定 `THREAD_PROGRESS=true` 後，Bot 會在 Thinking 訊息上開 Discord thread，持續輸出工具呼叫和 assistant 文字的中間過程。
+
+- 相關程式碼：`thread-reporter.ts`（`ThreadReporter` class）
+- 工具呼叫在核准/拒絕**後**才寫入 thread（避免敏感資訊外洩）
+- 被拒絕的工具會標記 `❌ denied`，逾時標記 `⏱️ timed out`
+- 事件每 5 秒 batch flush 一次，統一 buffer 維持時間序
+
 ## 注意：settingSources 修改
 
 `src/claude/session-manager.ts` 中的 `query()` 呼叫有加入以下設定，讓 Claude 能讀取 user 和 project 層級的 CLAUDE.md：
