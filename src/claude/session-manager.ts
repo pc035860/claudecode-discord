@@ -37,6 +37,7 @@ const pendingApprovals = new Map<
   {
     resolve: (decision: { behavior: "allow" | "deny"; message?: string }) => void;
     channelId: string;
+    timeout: ReturnType<typeof setTimeout>;
   }
 >();
 
@@ -46,6 +47,7 @@ const pendingQuestions = new Map<
   {
     resolve: (answer: string | null) => void;
     channelId: string;
+    timeout: ReturnType<typeof setTimeout>;
   }
 >();
 
@@ -273,6 +275,7 @@ class SessionManager {
                       resolve(ans);
                     },
                     channelId,
+                    timeout,
                   });
                 });
 
@@ -345,6 +348,7 @@ class SessionManager {
                   }
                 },
                 channelId,
+                timeout,
               });
             });
           },
@@ -470,10 +474,16 @@ class SessionManager {
 
       // Clean up any pending approvals/questions for this channel
       for (const [id, entry] of pendingApprovals) {
-        if (entry.channelId === channelId) pendingApprovals.delete(id);
+        if (entry.channelId === channelId) {
+          clearTimeout(entry.timeout);
+          pendingApprovals.delete(id);
+        }
       }
       for (const [id, entry] of pendingQuestions) {
-        if (entry.channelId === channelId) pendingQuestions.delete(id);
+        if (entry.channelId === channelId) {
+          clearTimeout(entry.timeout);
+          pendingQuestions.delete(id);
+        }
       }
       pendingCustomInputs.delete(channelId);
 
@@ -509,10 +519,16 @@ class SessionManager {
 
     // Clean up any pending approvals/questions for this channel
     for (const [id, entry] of pendingApprovals) {
-      if (entry.channelId === channelId) pendingApprovals.delete(id);
+      if (entry.channelId === channelId) {
+        clearTimeout(entry.timeout);
+        pendingApprovals.delete(id);
+      }
     }
     for (const [id, entry] of pendingQuestions) {
-      if (entry.channelId === channelId) pendingQuestions.delete(id);
+      if (entry.channelId === channelId) {
+        clearTimeout(entry.timeout);
+        pendingQuestions.delete(id);
+      }
     }
     pendingCustomInputs.delete(channelId);
 
