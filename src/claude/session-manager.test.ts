@@ -21,7 +21,7 @@ vi.mock("@anthropic-ai/claude-agent-sdk", () => ({
   query: vi.fn(),
 }));
 
-import { sessionManager } from "./session-manager.js";
+import { sessionManager, formatToolDetail, parseApiError } from "./session-manager.js";
 
 // Helper to create a mock TextChannel
 function mockChannel(id: string) {
@@ -141,5 +141,127 @@ describe("SessionManager", () => {
     it("returns false for inactive session", async () => {
       expect(await sessionManager.stopSession("no-session")).toBe(false);
     });
+  });
+});
+
+// ─── formatToolDetail ───
+
+describe("formatToolDetail", () => {
+  it("returns question headers for AskUserQuestion", () => {
+    expect(formatToolDetail("AskUserQuestion", {
+      questions: [{ header: "Auth" }, { header: "DB" }],
+    })).toBe("Auth, DB");
+  });
+
+  it("returns [type] description for Agent with subagent_type", () => {
+    expect(formatToolDetail("Agent", {
+      description: "explore code",
+      subagent_type: "researcher",
+    })).toBe("[researcher] explore code");
+  });
+
+  it("returns description for Agent without subagent_type", () => {
+    expect(formatToolDetail("Agent", {
+      description: "explore code",
+    })).toBe("explore code");
+  });
+
+  it("truncates Agent description at 80 chars", () => {
+    const long = "x".repeat(100);
+    const result = formatToolDetail("Agent", { description: long });
+    expect(result).toBe("x".repeat(80));
+  });
+
+  it("returns #id → status for TaskUpdate", () => {
+    expect(formatToolDetail("TaskUpdate", { id: "t1", status: "done" })).toBe("#t1 → done");
+  });
+
+  it("returns #id for TaskUpdate without status", () => {
+    expect(formatToolDetail("TaskUpdate", { id: "t1" })).toBe("#t1");
+  });
+
+  it("returns #id for TaskOutput", () => {
+    expect(formatToolDetail("TaskOutput", { id: "t2" })).toBe("#t2");
+  });
+
+  it("returns backtick-wrapped file_path", () => {
+    expect(formatToolDetail("Read", { file_path: "/a/b.ts" })).toBe("`/a/b.ts`");
+  });
+
+  it("returns backtick-wrapped command truncated at 100", () => {
+    const long = "x".repeat(150);
+    const result = formatToolDetail("Bash", { command: long });
+    expect(result).toBe("`" + "x".repeat(100) + "`");
+  });
+
+  it("returns url truncated at 120", () => {
+    const long = "https://" + "x".repeat(150);
+    const result = formatToolDetail("WebFetch", { url: long });
+    expect(result.length).toBe(120);
+  });
+
+  it("returns pattern with path", () => {
+    expect(formatToolDetail("Grep", { pattern: "*.ts", path: "/src" })).toBe('`*.ts` in `/src`');
+  });
+
+  it("returns pattern without path", () => {
+    expect(formatToolDetail("Grep", { pattern: "*.ts" })).toBe("`*.ts`");
+  });
+
+  it("returns quoted query", () => {
+    expect(formatToolDetail("WebSearch", { query: "search term" })).toBe('"search term"');
+  });
+
+  it("returns skill name", () => {
+    expect(formatToolDetail("Skill", { skill: "coding" })).toBe("coding");
+  });
+
+  it("returns quoted prompt", () => {
+    expect(formatToolDetail("SomeTool", { prompt: "build feature" })).toBe('"build feature"');
+  });
+
+  it("returns generic description (non-Agent)", () => {
+    expect(formatToolDetail("SomeTool", { description: "do stuff" })).toBe("do stuff");
+  });
+
+  it("returns empty string for empty input", () => {
+    expect(formatToolDetail("Unknown", {})).toBe("");
+  });
+
+  it("file_path takes priority over command", () => {
+    expect(formatToolDetail("Tool", { file_path: "/a.ts", command: "ls" })).toBe("`/a.ts`");
+  });
+});
+
+// ─── parseApiError ───
+
+describe("parseApiError", () => {
+  it("extracts error.message from API error JSON", () => {
+    const input = 'API Error: 429 {"error":{"message":"rate limited"}}';
+    expect(parseApiError(input)).toBe("API Error 429: rate limited. Please try again later.");
+  });
+
+  it("extracts top-level message from API error JSON", () => {
+    const input = 'API Error: 500 {"message":"internal"}';
+    expect(parseApiError(input)).toBe("API Error 500: internal. Please try again later.");
+  });
+
+  it("falls back to status code for unparseable JSON", () => {
+    const input = "API Error: 502 {bad json}";
+    expect(parseApiError(input)).toBe("API Error 502. Please try again later.");
+  });
+
+  it("appends retry suggestion for process exit errors", () => {
+    const input = "process exited with code 1";
+    expect(parseApiError(input)).toContain("temporarily unavailable");
+  });
+
+  it("returns raw message for unknown errors", () => {
+    expect(parseApiError("Something broke")).toBe("Something broke");
+  });
+
+  it("handles multiline JSON body (dotall flag)", () => {
+    const input = 'API Error: 429\n{"error":{"message":"wait"}}';
+    expect(parseApiError(input)).toBe("API Error 429: wait. Please try again later.");
   });
 });

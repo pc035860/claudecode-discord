@@ -54,6 +54,52 @@ const pendingQuestions = new Map<
 // Pending custom text inputs: channelId -> requestId
 const pendingCustomInputs = new Map<string, { requestId: string }>();
 
+export function formatToolDetail(name: string, input: Record<string, unknown>): string {
+  if (name === "AskUserQuestion" && Array.isArray(input.questions)) {
+    return (input.questions as { header: string }[]).map(q => q.header).join(", ");
+  }
+  if (name === "Agent" && typeof input.description === "string") {
+    const type = typeof input.subagent_type === "string" ? `[${input.subagent_type}] ` : "";
+    return `${type}${input.description.slice(0, 80)}`;
+  }
+  if (name === "TaskUpdate" && typeof input.id === "string") {
+    const status = typeof input.status === "string" ? ` → ${input.status}` : "";
+    return `#${input.id}${status}`;
+  }
+  if (name === "TaskOutput" && typeof input.id === "string") {
+    return `#${input.id}`;
+  }
+  if (typeof input.file_path === "string") return `\`${input.file_path}\``;
+  if (typeof input.command === "string") return `\`${input.command.slice(0, 100)}\``;
+  if (typeof input.url === "string") return `${input.url.slice(0, 120)}`;
+  if (typeof input.pattern === "string") return `\`${input.pattern}\`${typeof input.path === "string" ? ` in \`${input.path}\`` : ""}`;
+  if (typeof input.query === "string") return `"${input.query.slice(0, 80)}"`;
+  if (typeof input.skill === "string") return `${input.skill}`;
+  if (typeof input.prompt === "string") return `"${input.prompt.slice(0, 80)}"`;
+  if (typeof input.description === "string") return `${input.description.slice(0, 80)}`;
+  return "";
+}
+
+export function parseApiError(rawMsg: string): string {
+  const jsonMatch = rawMsg.match(
+    /API Error: (\d+)\s*(\{.*\})/s,
+  );
+  if (jsonMatch) {
+    try {
+      const parsed = JSON.parse(jsonMatch[2]);
+      const statusCode = jsonMatch[1];
+      const message =
+        parsed?.error?.message ?? parsed?.message ?? "Unknown error";
+      return `API Error ${statusCode}: ${message}. Please try again later.`;
+    } catch {
+      return `API Error ${jsonMatch[1]}. Please try again later.`;
+    }
+  } else if (rawMsg.includes("process exited with code")) {
+    return `${rawMsg}. The server may be temporarily unavailable — please try again later.`;
+  }
+  return rawMsg;
+}
+
 class SessionManager {
   private sessions = new Map<string, ActiveSession>();
   private static readonly MAX_QUEUE_SIZE = 5;
@@ -135,32 +181,6 @@ class SessionManager {
     let sessionDone = false;
 
     const pendingToolBlocks = new Map<number, { name: string; inputJson: string }>();
-
-    const formatToolDetail = (name: string, input: Record<string, unknown>): string => {
-      if (name === "AskUserQuestion" && Array.isArray(input.questions)) {
-        return (input.questions as { header: string }[]).map(q => q.header).join(", ");
-      }
-      if (name === "Agent" && typeof input.description === "string") {
-        const type = typeof input.subagent_type === "string" ? `[${input.subagent_type}] ` : "";
-        return `${type}${input.description.slice(0, 80)}`;
-      }
-      if (name === "TaskUpdate" && typeof input.id === "string") {
-        const status = typeof input.status === "string" ? ` → ${input.status}` : "";
-        return `#${input.id}${status}`;
-      }
-      if (name === "TaskOutput" && typeof input.id === "string") {
-        return `#${input.id}`;
-      }
-      if (typeof input.file_path === "string") return `\`${input.file_path}\``;
-      if (typeof input.command === "string") return `\`${input.command.slice(0, 100)}\``;
-      if (typeof input.url === "string") return `${input.url.slice(0, 120)}`;
-      if (typeof input.pattern === "string") return `\`${input.pattern}\`${typeof input.path === "string" ? ` in \`${input.path}\`` : ""}`;
-      if (typeof input.query === "string") return `"${input.query.slice(0, 80)}"`;
-      if (typeof input.skill === "string") return `${input.skill}`;
-      if (typeof input.prompt === "string") return `"${input.prompt.slice(0, 80)}"`;
-      if (typeof input.description === "string") return `${input.description.slice(0, 80)}`;
-      return "";
-    };
 
     // Heartbeat timer - updates status message every 15s when no text output yet
     const heartbeatInterval = setInterval(async () => {
@@ -487,27 +507,7 @@ class SessionManager {
     } catch (error) {
       const rawMsg =
         error instanceof Error ? error.message : "Unknown error occurred";
-
-      // Parse API error JSON to show clean message
-      let errMsg = rawMsg;
-      const jsonMatch = rawMsg.match(
-        /API Error: (\d+)\s*(\{.*\})/s,
-      );
-      if (jsonMatch) {
-        try {
-          const parsed = JSON.parse(jsonMatch[2]);
-          const statusCode = jsonMatch[1];
-          const message =
-            parsed?.error?.message ?? parsed?.message ?? "Unknown error";
-          errMsg = `API Error ${statusCode}: ${message}. Please try again later.`;
-        } catch (parseErr) {
-          console.warn(`[error-parse] Failed to parse API error JSON for ${channelId}:`, parseErr instanceof Error ? parseErr.message : parseErr);
-          // Fall back to extracting just the status code
-          errMsg = `API Error ${jsonMatch[1]}. Please try again later.`;
-        }
-      } else if (rawMsg.includes("process exited with code")) {
-        errMsg = `${rawMsg}. The server may be temporarily unavailable — please try again later.`;
-      }
+      const errMsg = parseApiError(rawMsg);
 
       await markDone();
       await channel.send(`❌ ${errMsg}`);
