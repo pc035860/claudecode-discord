@@ -20,3 +20,4 @@ com.claude-discord.plist
 .tray-lang
 
 specs/handover/*
+specs/auto-implement/*
