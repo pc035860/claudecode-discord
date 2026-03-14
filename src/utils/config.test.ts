@@ -1,11 +1,20 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
+async function expectConfigExit() {
+  const exitSpy = vi.spyOn(process, "exit").mockImplementation(() => {
+    throw new Error("process.exit called");
+  });
+  const { loadConfig } = await import("./config.js");
+  expect(() => loadConfig()).toThrow("process.exit called");
+  expect(exitSpy).toHaveBeenCalledWith(1);
+  exitSpy.mockRestore();
+}
+
 describe("config", () => {
   const originalEnv = { ...process.env };
 
   beforeEach(() => {
     vi.resetModules();
-    // Set valid env vars
     process.env.DISCORD_BOT_TOKEN = "test-token";
     process.env.DISCORD_GUILD_ID = "test-guild";
     process.env.ALLOWED_USER_IDS = "user1,user2";
@@ -65,20 +74,14 @@ describe("config", () => {
 
   it("calls process.exit(1) when required env vars are missing", async () => {
     delete process.env.DISCORD_BOT_TOKEN;
-    const exitSpy = vi.spyOn(process, "exit").mockImplementation(() => {
-      throw new Error("process.exit called");
-    });
-    const { loadConfig } = await import("./config.js");
-    expect(() => loadConfig()).toThrow("process.exit called");
-    expect(exitSpy).toHaveBeenCalledWith(1);
-    exitSpy.mockRestore();
+    await expectConfigExit();
   });
 
   it("getConfig returns cached config on second call", async () => {
     const { loadConfig, getConfig } = await import("./config.js");
     const first = loadConfig();
     const second = getConfig();
-    expect(first).toBe(second); // same reference
+    expect(first).toBe(second);
   });
 
   it("getConfig calls loadConfig if not yet loaded", async () => {
@@ -110,13 +113,7 @@ describe("config", () => {
 
     it("rejects invalid effort value", async () => {
       process.env.CLAUDE_EFFORT = "ultra";
-      const exitSpy = vi.spyOn(process, "exit").mockImplementation(() => {
-        throw new Error("process.exit called");
-      });
-      const { loadConfig } = await import("./config.js");
-      expect(() => loadConfig()).toThrow("process.exit called");
-      expect(exitSpy).toHaveBeenCalledWith(1);
-      exitSpy.mockRestore();
+      await expectConfigExit();
     });
   });
 
@@ -135,13 +132,7 @@ describe("config", () => {
 
     it("rejects invalid value", async () => {
       process.env.THREAD_PROGRESS = "yes";
-      const exitSpy = vi.spyOn(process, "exit").mockImplementation(() => {
-        throw new Error("process.exit called");
-      });
-      const { loadConfig } = await import("./config.js");
-      expect(() => loadConfig()).toThrow("process.exit called");
-      expect(exitSpy).toHaveBeenCalledWith(1);
-      exitSpy.mockRestore();
+      await expectConfigExit();
     });
   });
 
@@ -178,46 +169,22 @@ describe("config", () => {
 
     it("rejects zero", async () => {
       process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW = "0";
-      const exitSpy = vi.spyOn(process, "exit").mockImplementation(() => {
-        throw new Error("process.exit called");
-      });
-      const { loadConfig } = await import("./config.js");
-      expect(() => loadConfig()).toThrow("process.exit called");
-      expect(exitSpy).toHaveBeenCalledWith(1);
-      exitSpy.mockRestore();
+      await expectConfigExit();
     });
 
     it("rejects negative number", async () => {
       process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW = "-1";
-      const exitSpy = vi.spyOn(process, "exit").mockImplementation(() => {
-        throw new Error("process.exit called");
-      });
-      const { loadConfig } = await import("./config.js");
-      expect(() => loadConfig()).toThrow("process.exit called");
-      expect(exitSpy).toHaveBeenCalledWith(1);
-      exitSpy.mockRestore();
+      await expectConfigExit();
     });
 
     it("rejects decimal number", async () => {
       process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW = "3.5";
-      const exitSpy = vi.spyOn(process, "exit").mockImplementation(() => {
-        throw new Error("process.exit called");
-      });
-      const { loadConfig } = await import("./config.js");
-      expect(() => loadConfig()).toThrow("process.exit called");
-      expect(exitSpy).toHaveBeenCalledWith(1);
-      exitSpy.mockRestore();
+      await expectConfigExit();
     });
 
     it("rejects non-numeric string", async () => {
       process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW = "abc";
-      const exitSpy = vi.spyOn(process, "exit").mockImplementation(() => {
-        throw new Error("process.exit called");
-      });
-      const { loadConfig } = await import("./config.js");
-      expect(() => loadConfig()).toThrow("process.exit called");
-      expect(exitSpy).toHaveBeenCalledWith(1);
-      exitSpy.mockRestore();
+      await expectConfigExit();
     });
   });
 });

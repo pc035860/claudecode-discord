@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 // Mock all external dependencies before importing session-manager
 vi.mock("../utils/i18n.js", () => ({
@@ -85,6 +85,11 @@ describe("SessionManager", () => {
   describe("message queue", () => {
     const channelId = "queue-ch";
 
+    afterEach(() => {
+      sessionManager.clearQueue(channelId);
+      sessionManager.cancelQueue(channelId);
+    });
+
     it("hasQueue returns false initially", () => {
       expect(sessionManager.hasQueue(channelId)).toBe(false);
     });
@@ -132,6 +137,7 @@ describe("SessionManager", () => {
       }
       expect(sessionManager.isQueueFull(ch)).toBe(true);
       expect(sessionManager.getQueueSize(ch)).toBe(5);
+      sessionManager.clearQueue(ch);
     });
   });
 
