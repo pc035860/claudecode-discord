@@ -70,3 +70,17 @@ settingSources: ["user", "project"],
 ```
 
 原始碼預設不載入任何 filesystem 設定（`settingSources` 預設為 `[]`），需要明確指定才會生效。
+
+## 測試
+
+Vitest v2.0.0，測試檔案與原始碼共置（`*.test.ts`）。
+
+```bash
+npm test              # vitest run（單次）
+npm run test:watch    # vitest（監視模式）
+```
+
+- `formatToolDetail` 和 `parseApiError` 是從 `session-manager.ts` 提取出的 exported pure functions，方便單獨測試
+- `sendAttachments` 測試需 mock `fs.realpathSync`（macOS `/tmp` → `/private/tmp` symlink 問題），用 `vi.spyOn` 不用 `vi.mock`
+- `ThreadReporter` 測試用 `vi.useFakeTimers()`，注意 async flush 需搭配 `Promise.resolve()` yield
+- `config.test.ts` 每個 test case 都需要 `vi.resetModules()` + dynamic import（因 `_config` 快取）
