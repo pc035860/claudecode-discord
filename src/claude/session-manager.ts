@@ -118,9 +118,11 @@ class SessionManager {
       lastEditTime = Date.now();
     }
 
+    const config = getConfig();
+
     // Thread progress reporter
     let threadReporter: ThreadReporter | null = null;
-    if (getConfig().THREAD_PROGRESS) {
+    if (config.THREAD_PROGRESS) {
       threadReporter = new ThreadReporter(currentMessage);
       threadReporter.start();
     }
@@ -130,6 +132,7 @@ class SessionManager {
     let lastActivity = L("Thinking...", "생각 중...");
     let toolUseCount = 0;
     let hasTextOutput = false;
+    let sessionDone = false;
 
     const pendingToolBlocks = new Map<number, { name: string; inputJson: string }>();
 
@@ -161,7 +164,7 @@ class SessionManager {
 
     // Heartbeat timer - updates status message every 15s when no text output yet
     const heartbeatInterval = setInterval(async () => {
-      if (hasTextOutput) return; // stop heartbeat once real content is streaming
+      if (hasTextOutput || sessionDone) return;
       const elapsed = Math.round((Date.now() - startTime) / 1000);
       const mins = Math.floor(elapsed / 60);
       const secs = elapsed % 60;
@@ -171,10 +174,23 @@ class SessionManager {
           content: `⏳ ${lastActivity} (${timeStr})`,
           components: [stopRow],
         });
+        if (sessionDone) {
+          await currentMessage.edit({ components: [createCompletedButton()] });
+        }
       } catch (e) {
         console.warn(`[heartbeat] Failed to edit message for ${channelId}:`, e instanceof Error ? e.message : e);
       }
     }, 15_000);
+
+    const markDone = async () => {
+      sessionDone = true;
+      clearInterval(heartbeatInterval);
+      try {
+        await currentMessage.edit({ components: [createCompletedButton()] });
+      } catch (e) {
+        console.warn(`[complete] Failed to update completed button for ${channelId}:`, e instanceof Error ? e.message : e);
+      }
+    };
 
     const botRules = loadBotRules();
 
@@ -187,16 +203,20 @@ class SessionManager {
             ...process.env,
             // Prevent "nested session" error when bot is started from inside Claude Code
             CLAUDECODE: undefined,
+            ...(config.CLAUDE_CODE_AUTO_COMPACT_WINDOW
+              ? { CLAUDE_CODE_AUTO_COMPACT_WINDOW: String(config.CLAUDE_CODE_AUTO_COMPACT_WINDOW) }
+              : {}),
           },
           permissionMode: "default",
-          model: getConfig().CLAUDE_MODEL,
-          effort: getConfig().CLAUDE_EFFORT,
+          model: config.CLAUDE_MODEL,
+          effort: config.CLAUDE_EFFORT,
           systemPrompt: {
             type: "preset",
             preset: "claude_code",
             ...(botRules ? { append: botRules } : {}),
           },
           settingSources: ["user", "project"],
+          ...(config.THREAD_PROGRESS ? { includePartialMessages: true } : {}),
           ...(resumeSessionId ? { resume: resumeSessionId } : {}),
 
           canUseTool: async (
@@ -448,19 +468,12 @@ class SessionManager {
           const allAttachments = [...pendingAttachments, ...resultAttachments];
           await sendAttachments(channel, allAttachments, project.project_path);
 
-          // Replace stop button with completed button
-          try {
-            await currentMessage.edit({
-              components: [createCompletedButton()],
-            });
-          } catch (e) {
-            console.warn(`[complete] Failed to update completed button for ${channelId}:`, e instanceof Error ? e.message : e);
-          }
+          await markDone();
           const resultEmbed = createResultEmbed(
             cleanResult || L("Task completed", "작업 완료"),
             resultMsg.total_cost_usd ?? 0,
             resultMsg.duration_ms ?? 0,
-            getConfig().SHOW_COST,
+            config.SHOW_COST,
           );
           try {
             await channel.send({ embeds: [resultEmbed] });
@@ -496,6 +509,7 @@ class SessionManager {
         errMsg = `${rawMsg}. The server may be temporarily unavailable — please try again later.`;
       }
 
+      await markDone();
       await channel.send(`❌ ${errMsg}`);
       updateSessionStatus(channelId, "offline");
     } finally {

@@ -19,6 +19,13 @@ const envSchema = z.object({
     .enum(["true", "false"])
     .default("false")
     .transform((v) => v === "true"),
+  CLAUDE_CODE_AUTO_COMPACT_WINDOW: z
+    .string()
+    .optional()
+    .transform((v) => (v && v.trim() !== "" ? Number(v) : undefined))
+    .refine((v) => v === undefined || (Number.isInteger(v) && v > 0), {
+      message: "CLAUDE_CODE_AUTO_COMPACT_WINDOW must be a positive integer",
+    }),
 });
 
 export type Config = z.infer<typeof envSchema>;
