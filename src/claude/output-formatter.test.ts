@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 // Mock i18n to always return English strings (regardless of .tray-lang file)
 vi.mock("../utils/i18n.js", () => ({
@@ -9,6 +9,7 @@ import {
   formatStreamChunk,
   splitMessage,
   extractAttachments,
+  sendAttachments,
   createToolApprovalEmbed,
   createResultEmbed,
   createAskUserQuestionEmbed,
@@ -16,6 +17,7 @@ import {
   createCompletedButton,
   type AskQuestionData,
 } from "./output-formatter.js";
+import fs from "node:fs";
 
 // ─── formatStreamChunk ───
 
@@ -192,6 +194,104 @@ describe("extractAttachments", () => {
       "[ATTACH: /tmp/my file.png]",
     );
     expect(attachmentPaths).toEqual(["/tmp/my file.png"]);
+  });
+});
+
+// ─── sendAttachments ───
+
+describe("sendAttachments", () => {
+  let channel: { send: ReturnType<typeof vi.fn> };
+
+  beforeEach(() => {
+    channel = { send: vi.fn().mockResolvedValue(undefined) };
+    vi.spyOn(fs, "realpathSync").mockImplementation((p) => String(p));
+    vi.spyOn(fs, "existsSync").mockReturnValue(true);
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("does nothing for empty array", async () => {
+    await sendAttachments(channel, []);
+    expect(channel.send).not.toHaveBeenCalled();
+  });
+
+  it("uploads file in /tmp", async () => {
+    await sendAttachments(channel, ["/tmp/file.png"]);
+    expect(channel.send).toHaveBeenCalledTimes(1);
+    const call = channel.send.mock.calls[0][0];
+    expect(call.files).toHaveLength(1);
+  });
+
+  it("uploads file in /private/tmp (macOS)", async () => {
+    await sendAttachments(channel, ["/private/tmp/file.png"]);
+    expect(channel.send).toHaveBeenCalledTimes(1);
+    const call = channel.send.mock.calls[0][0];
+    expect(call.files).toHaveLength(1);
+  });
+
+  it("uploads file within projectPath", async () => {
+    await sendAttachments(channel, ["/projects/myapp/output.png"], "/projects/myapp");
+    expect(channel.send).toHaveBeenCalledTimes(1);
+    const call = channel.send.mock.calls[0][0];
+    expect(call.files).toHaveLength(1);
+  });
+
+  it("blocks file outside allowed paths", async () => {
+    await sendAttachments(channel, ["/etc/passwd"]);
+    expect(channel.send).toHaveBeenCalledWith(expect.stringContaining("blocked"));
+    const filesCall = channel.send.mock.calls.find((c: unknown[]) => typeof c[0] === "object" && c[0]?.files);
+    expect(filesCall).toBeUndefined();
+  });
+
+  it("blocks symlink escape (realpathSync resolves outside)", async () => {
+    vi.mocked(fs.realpathSync).mockImplementation((p) => {
+      if (String(p) === "/tmp/evil-link") return "/etc/secrets";
+      return String(p);
+    });
+    await sendAttachments(channel, ["/tmp/evil-link"]);
+    expect(channel.send).toHaveBeenCalledWith(expect.stringContaining("blocked"));
+  });
+
+  it("falls back to path.resolve when realpathSync throws", async () => {
+    vi.mocked(fs.realpathSync).mockImplementation(() => {
+      throw new Error("ENOENT");
+    });
+    await sendAttachments(channel, ["/tmp/newfile.png"]);
+    expect(channel.send).toHaveBeenCalledTimes(1);
+    const call = channel.send.mock.calls[0][0];
+    expect(call.files).toHaveLength(1);
+  });
+
+  it("warns when file does not exist", async () => {
+    vi.mocked(fs.existsSync).mockReturnValue(false);
+    await sendAttachments(channel, ["/tmp/missing.png"]);
+    expect(channel.send).toHaveBeenCalledWith(expect.stringContaining("not found"));
+  });
+
+  it("deduplicates paths", async () => {
+    await sendAttachments(channel, ["/tmp/a.png", "/tmp/a.png", "/tmp/a.png"]);
+    const filesCall = channel.send.mock.calls.find((c: unknown[]) => typeof c[0] === "object" && c[0]?.files);
+    expect(filesCall![0].files).toHaveLength(1);
+  });
+
+  it("caps at 10 attachments", async () => {
+    const paths = Array.from({ length: 12 }, (_, i) => `/tmp/file${i}.png`);
+    await sendAttachments(channel, paths);
+    const filesCall = channel.send.mock.calls.find((c: unknown[]) => typeof c[0] === "object" && c[0]?.files);
+    expect(filesCall![0].files).toHaveLength(10);
+    expect(console.warn).toHaveBeenCalledWith(expect.stringContaining("Too many"));
+  });
+
+  it("sends warning when channel.send with files throws", async () => {
+    channel.send
+      .mockRejectedValueOnce(new Error("Discord API error"))
+      .mockResolvedValueOnce(undefined);
+    await sendAttachments(channel, ["/tmp/file.png"]);
+    expect(channel.send).toHaveBeenCalledTimes(2);
+    expect(channel.send).toHaveBeenLastCalledWith(expect.stringContaining("Failed to send"));
   });
 });
 
