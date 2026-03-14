@@ -10,9 +10,12 @@ describe("config", () => {
     process.env.DISCORD_GUILD_ID = "test-guild";
     process.env.ALLOWED_USER_IDS = "user1,user2";
     process.env.BASE_PROJECT_DIR = "/projects";
-    // Clear optional vars to use defaults
     delete process.env.RATE_LIMIT_PER_MINUTE;
     delete process.env.SHOW_COST;
+    delete process.env.CLAUDE_MODEL;
+    delete process.env.CLAUDE_EFFORT;
+    delete process.env.THREAD_PROGRESS;
+    delete process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW;
   });
 
   afterEach(() => {
@@ -33,6 +36,10 @@ describe("config", () => {
     const config = loadConfig();
     expect(config.RATE_LIMIT_PER_MINUTE).toBe(10);
     expect(config.SHOW_COST).toBe(true);
+    expect(config.CLAUDE_MODEL).toBe("claude-sonnet-4-6");
+    expect(config.CLAUDE_EFFORT).toBe("medium");
+    expect(config.THREAD_PROGRESS).toBe(false);
+    expect(config.CLAUDE_CODE_AUTO_COMPACT_WINDOW).toBeUndefined();
   });
 
   it("parses ALLOWED_USER_IDS with spaces", async () => {
@@ -78,5 +85,139 @@ describe("config", () => {
     const { getConfig } = await import("./config.js");
     const config = getConfig();
     expect(config.DISCORD_BOT_TOKEN).toBe("test-token");
+  });
+
+  describe("CLAUDE_MODEL", () => {
+    it("accepts custom model value", async () => {
+      process.env.CLAUDE_MODEL = "claude-opus-4-6";
+      const { loadConfig } = await import("./config.js");
+      expect(loadConfig().CLAUDE_MODEL).toBe("claude-opus-4-6");
+    });
+  });
+
+  describe("CLAUDE_EFFORT", () => {
+    it("parses 'high' correctly", async () => {
+      process.env.CLAUDE_EFFORT = "high";
+      const { loadConfig } = await import("./config.js");
+      expect(loadConfig().CLAUDE_EFFORT).toBe("high");
+    });
+
+    it("parses 'low' correctly", async () => {
+      process.env.CLAUDE_EFFORT = "low";
+      const { loadConfig } = await import("./config.js");
+      expect(loadConfig().CLAUDE_EFFORT).toBe("low");
+    });
+
+    it("rejects invalid effort value", async () => {
+      process.env.CLAUDE_EFFORT = "ultra";
+      const exitSpy = vi.spyOn(process, "exit").mockImplementation(() => {
+        throw new Error("process.exit called");
+      });
+      const { loadConfig } = await import("./config.js");
+      expect(() => loadConfig()).toThrow("process.exit called");
+      expect(exitSpy).toHaveBeenCalledWith(1);
+      exitSpy.mockRestore();
+    });
+  });
+
+  describe("THREAD_PROGRESS", () => {
+    it("parses 'true' as boolean true", async () => {
+      process.env.THREAD_PROGRESS = "true";
+      const { loadConfig } = await import("./config.js");
+      expect(loadConfig().THREAD_PROGRESS).toBe(true);
+    });
+
+    it("parses 'false' as boolean false", async () => {
+      process.env.THREAD_PROGRESS = "false";
+      const { loadConfig } = await import("./config.js");
+      expect(loadConfig().THREAD_PROGRESS).toBe(false);
+    });
+
+    it("rejects invalid value", async () => {
+      process.env.THREAD_PROGRESS = "yes";
+      const exitSpy = vi.spyOn(process, "exit").mockImplementation(() => {
+        throw new Error("process.exit called");
+      });
+      const { loadConfig } = await import("./config.js");
+      expect(() => loadConfig()).toThrow("process.exit called");
+      expect(exitSpy).toHaveBeenCalledWith(1);
+      exitSpy.mockRestore();
+    });
+  });
+
+  describe("CLAUDE_CODE_AUTO_COMPACT_WINDOW", () => {
+    it("returns undefined when not set", async () => {
+      const { loadConfig } = await import("./config.js");
+      expect(loadConfig().CLAUDE_CODE_AUTO_COMPACT_WINDOW).toBeUndefined();
+    });
+
+    it("returns undefined for empty string", async () => {
+      process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW = "";
+      const { loadConfig } = await import("./config.js");
+      expect(loadConfig().CLAUDE_CODE_AUTO_COMPACT_WINDOW).toBeUndefined();
+    });
+
+    it("returns undefined for whitespace-only string", async () => {
+      process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW = "  ";
+      const { loadConfig } = await import("./config.js");
+      expect(loadConfig().CLAUDE_CODE_AUTO_COMPACT_WINDOW).toBeUndefined();
+    });
+
+    it("parses valid positive integer", async () => {
+      process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW = "100";
+      const { loadConfig } = await import("./config.js");
+      expect(loadConfig().CLAUDE_CODE_AUTO_COMPACT_WINDOW).toBe(100);
+    });
+
+    // Number("1e2") === 100 and Number.isInteger(100) === true
+    it("parses scientific notation as integer", async () => {
+      process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW = "1e2";
+      const { loadConfig } = await import("./config.js");
+      expect(loadConfig().CLAUDE_CODE_AUTO_COMPACT_WINDOW).toBe(100);
+    });
+
+    it("rejects zero", async () => {
+      process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW = "0";
+      const exitSpy = vi.spyOn(process, "exit").mockImplementation(() => {
+        throw new Error("process.exit called");
+      });
+      const { loadConfig } = await import("./config.js");
+      expect(() => loadConfig()).toThrow("process.exit called");
+      expect(exitSpy).toHaveBeenCalledWith(1);
+      exitSpy.mockRestore();
+    });
+
+    it("rejects negative number", async () => {
+      process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW = "-1";
+      const exitSpy = vi.spyOn(process, "exit").mockImplementation(() => {
+        throw new Error("process.exit called");
+      });
+      const { loadConfig } = await import("./config.js");
+      expect(() => loadConfig()).toThrow("process.exit called");
+      expect(exitSpy).toHaveBeenCalledWith(1);
+      exitSpy.mockRestore();
+    });
+
+    it("rejects decimal number", async () => {
+      process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW = "3.5";
+      const exitSpy = vi.spyOn(process, "exit").mockImplementation(() => {
+        throw new Error("process.exit called");
+      });
+      const { loadConfig } = await import("./config.js");
+      expect(() => loadConfig()).toThrow("process.exit called");
+      expect(exitSpy).toHaveBeenCalledWith(1);
+      exitSpy.mockRestore();
+    });
+
+    it("rejects non-numeric string", async () => {
+      process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW = "abc";
+      const exitSpy = vi.spyOn(process, "exit").mockImplementation(() => {
+        throw new Error("process.exit called");
+      });
+      const { loadConfig } = await import("./config.js");
+      expect(() => loadConfig()).toThrow("process.exit called");
+      expect(exitSpy).toHaveBeenCalledWith(1);
+      exitSpy.mockRestore();
+    });
   });
 });
