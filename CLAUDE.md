@@ -58,6 +58,7 @@ Claude 可在回應中用 `[ATTACH: /絕對路徑/檔案]` 標記檔案，Bot �
 - **工具來源**：SDK `stream_event`（`content_block_start/delta/stop` → `tool_use`），涵蓋所有工具（含 SDK 內部自動允許的 Agent、Task 等）
 - `canUseTool` 只負責推送 `❌ denied` 和 `⏱️ timed out` 狀態標記
 - 事件每 5 秒 batch flush，連續 text delta 會合併成一條 `💬` 訊息
+- **文字合併（coalescing）**：連續的純文字 flush 會用 `Message.edit()` 合併到前一條 Discord 訊息，而非每次都送新訊息。遇到工具事件、超過 `MAX_DISCORD_LENGTH`、或 edit 失敗時 fallback 為 send
 - Agent tool 顯示 `[subagent_type] description`，TaskUpdate 顯示 `#id → status`
 
 ## 注意：settingSources 修改
@@ -83,4 +84,5 @@ npm run test:watch    # vitest（監視模式）
 - `formatToolDetail` 和 `parseApiError` 是從 `session-manager.ts` 提取出的 exported pure functions，方便單獨測試
 - `sendAttachments` 測試需 mock `fs.realpathSync`（macOS `/tmp` → `/private/tmp` symlink 問題），用 `vi.spyOn` 不用 `vi.mock`
 - `ThreadReporter` 測試用 `vi.useFakeTimers()`，注意 async flush 需搭配 `Promise.resolve()` yield
+- `ThreadReporter` mock 的 `threadSend` 和 `threadEdit` 都需回傳 `{ edit: threadEdit }`，因為 `doFlush()` 會存 send/edit 的回傳值作為 `lastTextMessage`
 - `config.test.ts` 每個 test case 都需要 `vi.resetModules()` + dynamic import（因 `_config` 快取）

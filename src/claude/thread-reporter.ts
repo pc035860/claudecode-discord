@@ -14,6 +14,8 @@ export class ThreadReporter {
   private flushTimer: ReturnType<typeof setInterval> | null = null;
   private flushPromise: Promise<void> | null = null;
   private active = false;
+  private lastTextMessage: Message | null = null;
+  private lastMessageContent = "";
 
   constructor(private anchorMessage: Message) {}
 
@@ -44,6 +46,8 @@ export class ThreadReporter {
       console.warn("[thread-reporter] Failed to create thread:", e instanceof Error ? e.message : e);
       this.active = false;
       this.buffer.length = 0;
+      this.lastTextMessage = null;
+      this.lastMessageContent = "";
       if (this.flushTimer) {
         clearInterval(this.flushTimer);
         this.flushTimer = null;
@@ -59,6 +63,7 @@ export class ThreadReporter {
 
     const events = this.buffer.splice(0);
     const lines: string[] = [];
+    let hasTools = false;
 
     let textAccum = "";
     const flushText = () => {
@@ -77,6 +82,7 @@ export class ThreadReporter {
       if (ev.type === "tool") {
         flushText();
         lines.push(`🔧 **${ev.name}** ${ev.detail}`);
+        hasTools = true;
       } else {
         textAccum += ev.content;
       }
@@ -90,7 +96,34 @@ export class ThreadReporter {
       msg = msg.slice(0, MAX_DISCORD_LENGTH) + "\n…";
     }
 
-    await thread.send({ content: msg, allowedMentions: { parse: [] } });
+    const isTextOnly = !hasTools;
+
+    if (isTextOnly && this.lastTextMessage) {
+      const combined = this.lastMessageContent + "\n" + msg;
+      if (combined.length <= MAX_DISCORD_LENGTH) {
+        try {
+          this.lastTextMessage = await this.lastTextMessage.edit({
+            content: combined,
+            allowedMentions: { parse: [] },
+          });
+          this.lastMessageContent = combined;
+          return;
+        } catch {
+          this.lastTextMessage = null;
+          this.lastMessageContent = "";
+        }
+      }
+    }
+
+    const sentMessage = await thread.send({ content: msg, allowedMentions: { parse: [] } });
+
+    if (isTextOnly) {
+      this.lastTextMessage = sentMessage;
+      this.lastMessageContent = msg;
+    } else {
+      this.lastTextMessage = null;
+      this.lastMessageContent = "";
+    }
   }
 
   async flush(): Promise<void> {
@@ -119,5 +152,7 @@ export class ThreadReporter {
       console.warn("[thread-reporter] Error in stop:", e instanceof Error ? e.message : e);
     }
     this.active = false;
+    this.lastTextMessage = null;
+    this.lastMessageContent = "";
   }
 }

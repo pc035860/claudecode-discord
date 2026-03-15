@@ -7,11 +7,16 @@ vi.mock("../utils/i18n.js", () => ({
 }));
 
 function mockAnchorMessage() {
-  const threadSend = vi.fn().mockResolvedValue(undefined);
+  const threadEdit = vi.fn().mockImplementation(() =>
+    Promise.resolve({ edit: threadEdit })
+  );
+  const threadSend = vi.fn().mockImplementation(() =>
+    Promise.resolve({ edit: threadEdit })
+  );
   const thread = { send: threadSend } as any;
   const startThread = vi.fn().mockResolvedValue(thread);
   const message = { startThread } as any;
-  return { message, thread, threadSend, startThread };
+  return { message, thread, threadSend, threadEdit, startThread };
 }
 
 describe("ThreadReporter", () => {
@@ -229,6 +234,108 @@ describe("ThreadReporter", () => {
 
       expect(threadSend).toHaveBeenCalledTimes(1);
       await reporter.stop();
+    });
+  });
+
+  describe("text coalescing", () => {
+    it("edits previous message on consecutive text-only flushes", async () => {
+      const { message, threadSend, threadEdit } = mockAnchorMessage();
+      const reporter = new ThreadReporter(message);
+      reporter.start();
+      reporter.pushText("first chunk");
+      await reporter.flush();
+      reporter.pushText("second chunk");
+      await reporter.flush();
+      expect(threadSend).toHaveBeenCalledTimes(1);
+      expect(threadEdit).toHaveBeenCalledTimes(1);
+      expect(threadEdit.mock.calls[0][0].content).toBe("💬 first chunk\n💬 second chunk");
+      expect(threadEdit.mock.calls[0][0].allowedMentions).toEqual({ parse: [] });
+      await reporter.stop();
+    });
+
+    it("sends new message when tool flush follows text flush", async () => {
+      const { message, threadSend, threadEdit } = mockAnchorMessage();
+      const reporter = new ThreadReporter(message);
+      reporter.start();
+      reporter.pushText("hello");
+      await reporter.flush();
+      reporter.pushTool("Read", "`file.ts`");
+      await reporter.flush();
+      expect(threadSend).toHaveBeenCalledTimes(2);
+      expect(threadEdit).not.toHaveBeenCalled();
+      await reporter.stop();
+    });
+
+    it("sends new message when text flush follows tool flush", async () => {
+      const { message, threadSend, threadEdit } = mockAnchorMessage();
+      const reporter = new ThreadReporter(message);
+      reporter.start();
+      reporter.pushTool("Read", "`file.ts`");
+      await reporter.flush();
+      reporter.pushText("hello");
+      await reporter.flush();
+      expect(threadSend).toHaveBeenCalledTimes(2);
+      expect(threadEdit).not.toHaveBeenCalled();
+      await reporter.stop();
+    });
+
+    it("edits when combined exactly equals MAX_DISCORD_LENGTH", async () => {
+      const { message, threadSend, threadEdit } = mockAnchorMessage();
+      const reporter = new ThreadReporter(message);
+      reporter.start();
+      for (let i = 0; i < 9; i++) {
+        reporter.pushText("a".repeat(196));
+        await reporter.flush();
+      }
+      reporter.pushText("b".repeat(97));
+      await reporter.flush();
+      expect(threadSend).toHaveBeenCalledTimes(1);
+      expect(threadEdit).toHaveBeenCalledTimes(9);
+      const lastEdit = threadEdit.mock.calls[8][0].content;
+      expect(lastEdit.length).toBe(MAX_DISCORD_LENGTH);
+      await reporter.stop();
+    });
+
+    it("sends new message when combined exceeds MAX_DISCORD_LENGTH by 1", async () => {
+      const { message, threadSend, threadEdit } = mockAnchorMessage();
+      const reporter = new ThreadReporter(message);
+      reporter.start();
+      for (let i = 0; i < 9; i++) {
+        reporter.pushText("a".repeat(196));
+        await reporter.flush();
+      }
+      reporter.pushText("b".repeat(98));
+      await reporter.flush();
+      expect(threadSend).toHaveBeenCalledTimes(2);
+      expect(threadEdit).toHaveBeenCalledTimes(8);
+      await reporter.stop();
+    });
+
+    it("falls back to send when edit throws", async () => {
+      const { message, threadSend, threadEdit } = mockAnchorMessage();
+      threadEdit.mockRejectedValueOnce(new Error("message deleted"));
+      const reporter = new ThreadReporter(message);
+      reporter.start();
+      reporter.pushText("first");
+      await reporter.flush();
+      reporter.pushText("second");
+      await reporter.flush();
+      expect(threadSend).toHaveBeenCalledTimes(2);
+      expect(threadEdit).toHaveBeenCalledTimes(1);
+      await reporter.stop();
+    });
+
+    it("stop final flush can edit previous text-only message", async () => {
+      const { message, threadSend, threadEdit } = mockAnchorMessage();
+      const reporter = new ThreadReporter(message);
+      reporter.start();
+      reporter.pushText("before stop");
+      await reporter.flush();
+      reporter.pushText("during stop");
+      await reporter.stop();
+      expect(threadSend).toHaveBeenCalledTimes(1);
+      expect(threadEdit).toHaveBeenCalledTimes(1);
+      expect(threadEdit.mock.calls[0][0].content).toBe("💬 before stop\n💬 during stop");
     });
   });
 
