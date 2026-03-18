@@ -21,3 +21,5 @@ com.claude-discord.plist
 
 specs/handover/*
 specs/auto-implement/*
+rules/output-styles/*.md
+!rules/output-styles/seed.md
