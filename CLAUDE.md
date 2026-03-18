@@ -34,10 +34,17 @@ npm run build && pm2 restart claudecode-discord
 - `/register <path>` - 註冊 channel 到專案目錄
 - `/stop` - 停止當前 session
 - `/auto-approve <mode>` - 設定工具自動核准模式
+- `/output-styles <style>` - 切換頻道的 Output Style（人格），需 Manage Channels 權限
 
-## Bot 行為規則（bot-rules.md）
+## Bot 行為規則與 Output Style
 
-在專案根目錄放置 `bot-rules.md`，內容會透過 `systemPrompt.append` 注入到每個 Claude session。不需重啟 bot 即可更新規則（每次 session 啟動時重新讀取）。檔案不存在時優雅降級，行為與原本相同。
+**行為規則**：`rules/BOT.md`，注入到每個 Claude session（`systemPrompt.append`），不需重啟即可更新。
+
+**Output Style（人格）**：放在 `rules/output-styles/<name>.md`，每個頻道可用 `/output-styles` 切換。預設為 `seed`。切換後下一條訊息即生效（resume 保留對話紀錄）。
+
+- 檔名限制：`[A-Za-z0-9_-]`，非法名稱自動 fallback 到 `seed`
+- style 檔消失時 runtime fallback 到 `seed`（不自動修改 DB）
+- 相關程式碼：`src/utils/rules-loader.ts`（`loadBotRules`, `listOutputStyles`）
 
 ## 附件上傳功能
 
@@ -47,7 +54,7 @@ Claude 可在回應中用 `[ATTACH: /絕對路徑/檔案]` 標記檔案，Bot �
 - 上限 10 個附件，自動去重、批次發送
 - 相關程式碼：`output-formatter.ts`（`extractAttachments` / `sendAttachments`）
 - Bot 需要 Discord `Attach Files` 權限（見 SETUP.md）
-- 標記說明寫在 `bot-rules.md`，Claude 每次 session 啟動時讀取
+- 標記說明寫在 `rules/BOT.md`，Claude 每次 session 啟動時讀取
 
 ## Thread Progress（討論串進度）
 

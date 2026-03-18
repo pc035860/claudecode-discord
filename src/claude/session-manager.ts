@@ -212,7 +212,7 @@ class SessionManager {
       }
     };
 
-    const botRules = loadBotRules();
+    const botRules = loadBotRules(project.output_style ?? undefined);
 
     try {
       const queryInstance = query({
