@@ -29,6 +29,14 @@ export function initDatabase(): void {
       created_at TEXT DEFAULT (datetime('now'))
     );
   `);
+
+  try {
+    db.exec(`ALTER TABLE projects ADD COLUMN output_style TEXT DEFAULT 'seed'`);
+  } catch (e) {
+    if (!(e instanceof Error && e.message.includes("duplicate column"))) {
+      console.error("[db] migration failed (output_style):", e);
+    }
+  }
 }
 
 export function getDb(): Database.Database {
@@ -71,6 +79,13 @@ export function setAutoApprove(
 ): void {
   db.prepare("UPDATE projects SET auto_approve = ? WHERE channel_id = ?").run(
     autoApprove ? 1 : 0,
+    channelId,
+  );
+}
+
+export function setOutputStyle(channelId: string, style: string): void {
+  db.prepare("UPDATE projects SET output_style = ? WHERE channel_id = ?").run(
+    style,
     channelId,
   );
 }

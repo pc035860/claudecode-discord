@@ -107,12 +107,18 @@ export class ThreadReporter {
             allowedMentions: { parse: [] },
           });
           this.lastMessageContent = combined;
+          console.log(`[thread-reporter] edited msg (${combined.length} chars)`);
           return;
-        } catch {
+        } catch (e) {
+          console.warn("[thread-reporter] edit failed, fallback to send:", e instanceof Error ? e.message : e);
           this.lastTextMessage = null;
           this.lastMessageContent = "";
         }
+      } else {
+        console.log(`[thread-reporter] combined too long (${combined.length}), sending new`);
       }
+    } else if (isTextOnly) {
+      console.log("[thread-reporter] text-only, no prev msg to edit");
     }
 
     const sentMessage = await thread.send({ content: msg, allowedMentions: { parse: [] } });
