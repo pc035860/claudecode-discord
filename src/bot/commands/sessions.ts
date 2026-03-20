@@ -4,6 +4,7 @@ import {
   ActionRowBuilder,
   StringSelectMenuBuilder,
 } from "discord.js";
+import { listSessions as sdkListSessions } from "@anthropic-ai/claude-agent-sdk";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
@@ -14,7 +15,8 @@ import { L } from "../../utils/i18n.js";
 interface SessionInfo {
   sessionId: string;
   firstMessage: string;
-  timestamp: string;
+  customTitle?: string;
+  lastModified: number;
   fileSize: number;
 }
 
@@ -142,91 +144,20 @@ export async function getLastAssistantMessageFull(filePath: string): Promise<str
 }
 
 /**
- * Read the first user message from a JSONL session file.
- */
-async function getFirstUserMessage(filePath: string): Promise<{ text: string; timestamp: string }> {
-  const stream = fs.createReadStream(filePath, { encoding: "utf-8" });
-  const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
-
-  let timestamp = "";
-  let text = "";
-
-  for await (const line of rl) {
-    try {
-      const entry = JSON.parse(line);
-
-      // Grab timestamp from first line
-      if (!timestamp && entry.timestamp) {
-        timestamp = entry.timestamp;
-      }
-
-      // Find first user message with real text content (skip IDE-injected tags)
-      if (entry.type === "user" && entry.message?.content) {
-        const content = entry.message.content;
-        let raw = "";
-        if (Array.isArray(content)) {
-          for (const block of content) {
-            if (block.type === "text" && block.text) {
-              raw = block.text;
-              break;
-            }
-          }
-        } else if (typeof content === "string") {
-          raw = content;
-        }
-        // Strip system/IDE tags like <ide_opened_file>...</ide_opened_file>, <system-reminder>...
-        const cleaned = raw.replace(/<[^>]+>[^<]*<\/[^>]+>/g, "").replace(/<[^>]+>/g, "").trim();
-        if (cleaned) {
-          text = cleaned;
-          break;
-        }
-      }
-    } catch {
-      // skip malformed lines
-    }
-  }
-
-  rl.close();
-  stream.destroy();
-
-  return { text: text || "(empty session)", timestamp };
-}
-
-/**
- * List all session JSONL files for a given project path.
+ * List all sessions for a given project path using the SDK.
  */
 async function listSessions(projectPath: string): Promise<SessionInfo[]> {
-  const sessionDir = findSessionDir(projectPath);
-  if (!sessionDir) return [];
+  const sdkSessions = await sdkListSessions({ dir: projectPath });
 
-  const files = fs.readdirSync(sessionDir).filter((f) => f.endsWith(".jsonl"));
-  const sessions: SessionInfo[] = [];
-
-  for (const file of files) {
-    const filePath = path.join(sessionDir, file);
-    const stat = fs.statSync(filePath);
-
-    // Skip very small files (likely empty/abandoned sessions)
-    if (stat.size < 512) continue;
-
-    const sessionId = file.replace(".jsonl", "");
-    const { text } = await getFirstUserMessage(filePath);
-
-    // Skip sessions with no actual user message
-    if (text === "(empty session)") continue;
-
-    sessions.push({
-      sessionId,
-      firstMessage: text.slice(0, 80),
-      timestamp: stat.mtime.toISOString(),
-      fileSize: stat.size,
-    });
-  }
-
-  // Sort by most recent first
-  sessions.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
-
-  return sessions;
+  return sdkSessions
+    .filter((s) => (s.fileSize ?? 0) >= 512 && s.summary)
+    .map((s) => ({
+      sessionId: s.sessionId,
+      firstMessage: (s.firstPrompt ?? s.summary).slice(0, 80),
+      customTitle: s.customTitle,
+      lastModified: s.lastModified,
+      fileSize: s.fileSize ?? 0,
+    }));
 }
 
 export const data = new SlashCommandBuilder()
@@ -280,8 +211,8 @@ export async function execute(
   ];
 
   const sessionOptions = sessions.slice(0, 24).map((s, i) => {
-    const date = new Date(s.timestamp);
-    const diffMs = Date.now() - date.getTime();
+    const date = new Date(s.lastModified);
+    const diffMs = Date.now() - s.lastModified;
     const diffMin = Math.floor(diffMs / 60000);
     const diffHr = Math.floor(diffMs / 3600000);
     const diffDay = Math.floor(diffMs / 86400000);
@@ -294,9 +225,10 @@ export async function execute(
 
     const sizeKB = Math.round(s.fileSize / 1024);
     const isActive = s.sessionId === activeSessionId;
+    const displayName = s.customTitle ?? s.firstMessage;
     const label = isActive
-      ? `▶ ${s.firstMessage.slice(0, 48)}`
-      : s.firstMessage.slice(0, 50) || `Session ${i + 1}`;
+      ? `▶ ${displayName.slice(0, 48)}`
+      : displayName.slice(0, 50) || `Session ${i + 1}`;
     const desc = isActive
       ? `${L("Active", "사용 중")} | ${timeStr} | ${sizeKB}KB`
       : `${timeStr} | ${sizeKB}KB | ${s.sessionId.slice(0, 8)}...`;

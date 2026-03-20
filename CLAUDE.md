@@ -35,6 +35,7 @@ npm run build && pm2 restart claudecode-discord
 - `/stop` - 停止當前 session
 - `/auto-approve <mode>` - 設定工具自動核准模式
 - `/output-styles <style>` - 切換頻道的 Output Style（人格），需 Manage Channels 權限
+- `/rename-session <name>` - 重新命名當前 session（寫入 JSONL `custom-title`，`/sessions` 列表會優先顯示）
 
 ## Bot 行為規則與 Output Style
 
@@ -67,6 +68,10 @@ Claude 可在回應中用 `[ATTACH: /絕對路徑/檔案]` 標記檔案，Bot �
 - 事件每 5 秒 batch flush，連續 text delta 會合併成一條 `💬` 訊息
 - **文字合併（coalescing）**：連續的純文字 flush 會用 `Message.edit()` 合併到前一條 Discord 訊息，而非每次都送新訊息。遇到工具事件、超過 `MAX_DISCORD_LENGTH`、或 edit 失敗時 fallback 為 send
 - Agent tool 顯示 `[subagent_type] description`，TaskUpdate 顯示 `#id → status`
+
+## SDK 函式使用
+
+`/sessions` 和 `/rename-session` 使用 SDK 的 `listSessions()` 和 `renameSession()`（來自 `@anthropic-ai/claude-agent-sdk`），直接操作 `~/.claude/projects/` 下的 JSONL 檔案，不需要手動解析。
 
 ## 注意：settingSources 修改
 
