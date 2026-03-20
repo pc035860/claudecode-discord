@@ -3,7 +3,10 @@ import {
   SlashCommandBuilder,
 } from "discord.js";
 import { renameSession } from "@anthropic-ai/claude-agent-sdk";
+import fs from "node:fs";
+import path from "node:path";
 import { getProject, getSession } from "../../db/database.js";
+import { findSessionDir } from "./sessions.js";
 import { L } from "../../utils/i18n.js";
 
 export const data = new SlashCommandBuilder()
@@ -68,6 +71,19 @@ export async function execute(
       ),
     });
     return;
+  }
+
+  try {
+    const sessionDir = findSessionDir(project.project_path);
+    if (sessionDir) {
+      const jsonlPath = path.join(sessionDir, `${session.session_id}.jsonl`);
+      if (fs.existsSync(jsonlPath)) {
+        const record = JSON.stringify({ type: "agent-name", agentName: name, sessionId: session.session_id });
+        fs.appendFileSync(jsonlPath, record + "\n");
+      }
+    }
+  } catch (e) {
+    console.warn("[rename-session] Failed to write agent-name:", e instanceof Error ? e.message : e);
   }
 
   await interaction.editReply({

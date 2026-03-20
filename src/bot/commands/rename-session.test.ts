@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 vi.mock("../../utils/i18n.js", () => ({
   L: (en: string, _kr: string) => en,
@@ -13,9 +13,15 @@ vi.mock("@anthropic-ai/claude-agent-sdk", () => ({
   renameSession: vi.fn(),
 }));
 
+vi.mock("./sessions.js", () => ({
+  findSessionDir: vi.fn(),
+}));
+
+import fs from "node:fs";
 import { execute } from "./rename-session.js";
 import { getProject, getSession } from "../../db/database.js";
 import { renameSession } from "@anthropic-ai/claude-agent-sdk";
+import { findSessionDir } from "./sessions.js";
 
 function mockInteraction(channelId: string, name: string) {
   return {
@@ -30,6 +36,10 @@ function mockInteraction(channelId: string, name: string) {
 describe("rename-session command", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
   });
 
   it("replies with error when channel is not registered", async () => {
@@ -183,6 +193,71 @@ describe("rename-session command", () => {
     );
   });
 
+  it("appends agent-name record to JSONL after rename", async () => {
+    vi.mocked(getProject).mockReturnValue({
+      channel_id: "ch-9",
+      project_path: "/projects/myapp",
+      guild_id: "g1",
+      auto_approve: false,
+    } as any);
+    vi.mocked(getSession).mockReturnValue({
+      id: "db-id",
+      channel_id: "ch-9",
+      session_id: "abc12345-0000-0000-0000-000000000000",
+      status: "online",
+      last_activity: null,
+      created_at: "",
+    } as any);
+    vi.mocked(renameSession).mockResolvedValueOnce(undefined);
+    vi.mocked(findSessionDir).mockReturnValue("/fake/session-dir");
+    const existsSpy = vi.spyOn(fs, "existsSync").mockReturnValue(true);
+    const appendSpy = vi.spyOn(fs, "appendFileSync").mockImplementation(() => {});
+
+    const interaction = mockInteraction("ch-9", "my-title");
+    await execute(interaction);
+
+    expect(appendSpy).toHaveBeenCalledWith(
+      "/fake/session-dir/abc12345-0000-0000-0000-000000000000.jsonl",
+      expect.stringContaining('"type":"agent-name"'),
+    );
+    const written = appendSpy.mock.calls[0][1] as string;
+    expect(JSON.parse(written.trim())).toEqual({
+      type: "agent-name",
+      agentName: "my-title",
+      sessionId: "abc12345-0000-0000-0000-000000000000",
+    });
+
+  });
+
+  it("skips agent-name when session dir not found", async () => {
+    vi.mocked(getProject).mockReturnValue({
+      channel_id: "ch-10",
+      project_path: "/projects/myapp",
+      guild_id: "g1",
+      auto_approve: false,
+    } as any);
+    vi.mocked(getSession).mockReturnValue({
+      id: "db-id",
+      channel_id: "ch-10",
+      session_id: "abc12345-0000-0000-0000-000000000000",
+      status: "online",
+      last_activity: null,
+      created_at: "",
+    } as any);
+    vi.mocked(renameSession).mockResolvedValueOnce(undefined);
+    vi.mocked(findSessionDir).mockReturnValue(null);
+    const appendSpy = vi.spyOn(fs, "appendFileSync");
+
+    const interaction = mockInteraction("ch-10", "my-title");
+    await execute(interaction);
+
+    expect(appendSpy).not.toHaveBeenCalled();
+    expect(interaction.editReply).toHaveBeenCalledWith({
+      embeds: expect.any(Array),
+    });
+
+  });
+
   it("includes error detail when SDK throws", async () => {
     vi.mocked(getProject).mockReturnValue({
       channel_id: "ch-7",
@@ -203,6 +278,65 @@ describe("rename-session command", () => {
     await execute(interaction);
     expect(interaction.editReply).toHaveBeenCalledWith({
       content: expect.stringContaining("ENOENT"),
+    });
+  });
+
+  it("skips agent-name when JSONL file does not exist", async () => {
+    vi.mocked(getProject).mockReturnValue({
+      channel_id: "ch-11",
+      project_path: "/projects/myapp",
+      guild_id: "g1",
+      auto_approve: false,
+    } as any);
+    vi.mocked(getSession).mockReturnValue({
+      id: "db-id",
+      channel_id: "ch-11",
+      session_id: "abc12345-0000-0000-0000-000000000000",
+      status: "online",
+      last_activity: null,
+      created_at: "",
+    } as any);
+    vi.mocked(renameSession).mockResolvedValueOnce(undefined);
+    vi.mocked(findSessionDir).mockReturnValue("/fake/session-dir");
+    vi.spyOn(fs, "existsSync").mockReturnValue(false);
+    const appendSpy = vi.spyOn(fs, "appendFileSync");
+
+    const interaction = mockInteraction("ch-11", "my-title");
+    await execute(interaction);
+
+    expect(appendSpy).not.toHaveBeenCalled();
+    expect(interaction.editReply).toHaveBeenCalledWith({
+      embeds: expect.any(Array),
+    });
+  });
+
+  it("still succeeds when agent-name write fails", async () => {
+    vi.mocked(getProject).mockReturnValue({
+      channel_id: "ch-12",
+      project_path: "/projects/myapp",
+      guild_id: "g1",
+      auto_approve: false,
+    } as any);
+    vi.mocked(getSession).mockReturnValue({
+      id: "db-id",
+      channel_id: "ch-12",
+      session_id: "abc12345-0000-0000-0000-000000000000",
+      status: "online",
+      last_activity: null,
+      created_at: "",
+    } as any);
+    vi.mocked(renameSession).mockResolvedValueOnce(undefined);
+    vi.mocked(findSessionDir).mockReturnValue("/fake/session-dir");
+    vi.spyOn(fs, "existsSync").mockReturnValue(true);
+    vi.spyOn(fs, "appendFileSync").mockImplementation(() => { throw new Error("EACCES"); });
+
+    const interaction = mockInteraction("ch-12", "my-title");
+    await execute(interaction);
+
+    expect(interaction.editReply).toHaveBeenCalledWith({
+      embeds: [expect.objectContaining({
+        title: expect.stringContaining("Renamed"),
+      })],
     });
   });
 });
