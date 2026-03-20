@@ -16,6 +16,8 @@ export class ThreadReporter {
   private active = false;
   private lastTextMessage: Message | null = null;
   private lastMessageContent = "";
+  private createAttempts = 0;
+  private static readonly MAX_CREATE_ATTEMPTS = 2;
 
   constructor(private anchorMessage: Message) {}
 
@@ -43,7 +45,12 @@ export class ThreadReporter {
       });
       return this.thread;
     } catch (e) {
-      console.warn("[thread-reporter] Failed to create thread:", e instanceof Error ? e.message : e);
+      this.createAttempts++;
+      if (this.createAttempts < ThreadReporter.MAX_CREATE_ATTEMPTS) {
+        console.warn(`[thread-reporter] Failed to create thread (attempt ${this.createAttempts}, will retry):`, e instanceof Error ? e.message : e);
+        return null;
+      }
+      console.warn(`[thread-reporter] Failed to create thread (attempt ${this.createAttempts}, giving up):`, e instanceof Error ? e.message : e);
       this.active = false;
       this.buffer.length = 0;
       this.lastTextMessage = null;

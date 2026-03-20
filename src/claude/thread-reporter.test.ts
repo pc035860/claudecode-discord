@@ -193,16 +193,38 @@ describe("ThreadReporter", () => {
       await reporter.stop();
     });
 
-    it("deactivates on startThread failure", async () => {
+    it("retries thread creation on first failure", async () => {
       const { message, startThread, threadSend } = mockAnchorMessage();
       startThread.mockRejectedValueOnce(new Error("Cannot create thread"));
       const reporter = new ThreadReporter(message);
       reporter.start();
       reporter.pushTool("Read", "file");
-      await reporter.flush();
+      await reporter.flush();  // fails: buffer preserved, active stays true
 
       reporter.pushTool("Write", "file2");
-      await reporter.flush();
+      await reporter.flush();  // retries: succeeds, sends both events
+      expect(startThread).toHaveBeenCalledTimes(2);
+      expect(threadSend).toHaveBeenCalledTimes(1);
+      const content = threadSend.mock.calls[0][0].content;
+      expect(content).toContain("Read");
+      expect(content).toContain("Write");
+      await reporter.stop();
+    });
+
+    it("deactivates permanently after 2 failures", async () => {
+      const { message, startThread, threadSend } = mockAnchorMessage();
+      startThread.mockRejectedValue(new Error("Cannot create thread"));
+      const reporter = new ThreadReporter(message);
+      reporter.start();
+      reporter.pushTool("Read", "file");
+      await reporter.flush();  // attempt 1 fails, will retry
+
+      reporter.pushTool("Write", "file2");
+      await reporter.flush();  // attempt 2 fails, gives up → active = false
+
+      reporter.pushTool("Bash", "ls");
+      await reporter.flush();  // dropped: active is false
+      expect(startThread).toHaveBeenCalledTimes(2);
       expect(threadSend).not.toHaveBeenCalled();
       await reporter.stop();
     });
