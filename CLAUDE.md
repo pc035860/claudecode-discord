@@ -73,6 +73,10 @@ Claude 可在回應中用 `[ATTACH: /絕對路徑/檔案]` 標記檔案，Bot �
 
 `/sessions` 和 `/rename-session` 使用 SDK 的 `listSessions()` 和 `renameSession()`（來自 `@anthropic-ai/claude-agent-sdk`），直接操作 `~/.claude/projects/` 下的 JSONL 檔案，不需要手動解析。
 
+## 注意：SDK 與 CLI 工具集差異
+
+SDK `0.2.76` 內嵌 CLI `2.1.76`，但工具集仍為 **TodoWrite**；系統 CLI `2.1.76` 已切換到 **Task 系列**（TaskCreate/TaskGet/TaskList 等）。透過 SDK `query()` 啟動的 session 會使用 TodoWrite，直接用 CLI 互動的則用 Task。升級 SDK 時注意工具名稱是否同步。
+
 ## 注意：settingSources 修改
 
 `src/claude/session-manager.ts` 中的 `query()` 呼叫有加入以下設定，讓 Claude 能讀取 user 和 project 層級的 CLAUDE.md：
