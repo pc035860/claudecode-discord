@@ -89,6 +89,15 @@ if [ "$1" = "--fg" ]; then
     if [ ! -d "dist" ]; then
         echo "[claude-bot] No build files found, building..."
         npm run build
+    elif find src -name "*.ts" -newer dist/index.js 2>/dev/null | grep -q .; then
+        echo "[claude-bot] Source changed, rebuilding..."
+        npm run build
+    fi
+
+    # Check native module compatibility
+    if ! node -e "require('./node_modules/better-sqlite3/build/Release/better_sqlite3.node')" 2>/dev/null; then
+        echo "[claude-bot] Native modules incompatible, rebuilding..."
+        npm rebuild better-sqlite3
     fi
 
     echo "[claude-bot] Starting bot (foreground)..."
@@ -98,6 +107,12 @@ if [ "$1" = "--fg" ]; then
 fi
 
 # Default: background mode (register with launchd)
+
+# Check native module compatibility
+if ! node -e "require('./node_modules/better-sqlite3/build/Release/better_sqlite3.node')" 2>/dev/null; then
+    echo "[claude-bot] Native modules incompatible, rebuilding..."
+    npm rebuild better-sqlite3
+fi
 
 # Stop existing bot if running
 if launchctl list | grep -q "$LABEL"; then

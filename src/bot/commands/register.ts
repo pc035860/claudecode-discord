@@ -91,22 +91,45 @@ export async function autocomplete(
   const baseDir = config.BASE_PROJECT_DIR;
 
   try {
-    const entries = fs.readdirSync(baseDir, { withFileTypes: true });
+    // Split into parent path and current typed prefix
+    const lastSlash = focused.lastIndexOf("/");
+    const parentPart = lastSlash >= 0 ? focused.slice(0, lastSlash) : "";
+    const currentPrefix = lastSlash >= 0 ? focused.slice(lastSlash + 1) : focused;
+
+    // Directory to list: baseDir/parentPart (or baseDir if no slash yet)
+    const listDir = parentPart ? path.join(baseDir, parentPart) : baseDir;
+
+    // Security: must stay within baseDir
+    const resolvedList = path.resolve(listDir);
+    const resolvedBase = path.resolve(baseDir);
+    if (!resolvedList.startsWith(resolvedBase)) {
+      await interaction.respond([]);
+      return;
+    }
+
+    const entries = fs.readdirSync(listDir, { withFileTypes: true });
     const dirs = entries
       .filter((e) => e.isDirectory() && !e.name.startsWith("."))
       .map((e) => e.name)
-      .filter((name) => name.toLowerCase().includes(focused.toLowerCase()))
-      .slice(0, 24); // Discord max 25, reserve 1 for base dir
+      .filter((name) => name.toLowerCase().includes(currentPrefix.toLowerCase()))
+      .slice(0, 24);
 
     const choices: { name: string; value: string }[] = [];
-    // Add base directory itself as first option
-    if (!focused || ".".includes(focused.toLowerCase()) || baseDir.toLowerCase().includes(focused.toLowerCase())) {
+
+    // Add base directory itself as first option (only at root level)
+    if (!parentPart && (!focused || ".".includes(focused.toLowerCase()) || baseDir.toLowerCase().includes(focused.toLowerCase()))) {
       choices.push({ name: `. (${baseDir})`, value: baseDir });
     }
-    choices.push(...dirs.map((name) => ({ name, value: name })));
 
-    // If user typed something that doesn't exactly match any existing dir, offer to create it
-    if (focused && !dirs.some((d) => d.toLowerCase() === focused.toLowerCase())) {
+    choices.push(
+      ...dirs.map((name) => {
+        const value = parentPart ? `${parentPart}/${name}` : name;
+        return { name: value, value };
+      }),
+    );
+
+    // Offer to create if no exact match
+    if (focused && !dirs.some((d) => d.toLowerCase() === currentPrefix.toLowerCase())) {
       choices.push({ name: `📁 Create new: ${focused}`, value: focused });
     }
 

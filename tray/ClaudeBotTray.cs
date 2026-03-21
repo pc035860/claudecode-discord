@@ -3,6 +3,9 @@ using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.IO;
+using System.Globalization;
+using System.Net;
+using System.Text.RegularExpressions;
 using System.Windows.Forms;
 using System.Threading;
 using System.Runtime.InteropServices;
@@ -32,6 +35,16 @@ class ClaudeBotTray : Form
     private Color lastIconColor = Color.Empty;
     private IntPtr lastHIcon = IntPtr.Zero;
     private string lastStatusText = "";
+
+    // Usage data
+    private double usageFiveHour = -1;
+    private double usageSevenDay = -1;
+    private double usageSevenDaySonnet = -1;
+    private string usageFiveHourReset = "";
+    private string usageSevenDayReset = "";
+    private string usageSevenDaySonnetReset = "";
+    private DateTime? usageLastFetched = null;
+    private System.Windows.Forms.Timer usageTimer;
 
     // Language support
     private string langPrefFile;
@@ -86,6 +99,16 @@ class ClaudeBotTray : Form
 
         // Initial update check
         CheckForUpdates();
+
+        // Load cached usage, then fetch fresh
+        LoadUsageCache();
+
+        // Usage fetch timer (every 5 minutes)
+        usageTimer = new System.Windows.Forms.Timer();
+        usageTimer.Interval = 300000;
+        usageTimer.Tick += (s, e) => { try { if (controlPanel != null && !controlPanel.IsDisposed && controlPanel.Visible) FetchUsage(); } catch { } };
+        usageTimer.Start();
+        FetchUsage();
 
         bool showPanel = false;
         string[] args = Environment.GetCommandLineArgs();
@@ -374,10 +397,12 @@ class ClaudeBotTray : Form
             Thread.Sleep(2000);
         }
 
-        // git pull
+        // Stash local changes, pull, then restore
+        RunCmdOutput("git", "-C \"" + botDir + "\" stash");
         RunCmdOutput("git", "-C \"" + botDir + "\" pull origin main --tags");
-        // npm install & build
-        RunCmd("cd /d \"" + botDir + "\" && npm install && npm run build", true);
+        RunCmdOutput("git", "-C \"" + botDir + "\" stash pop");
+        // npm install, rebuild native modules & build
+        RunCmd("cd /d \"" + botDir + "\" && npm install && npm rebuild better-sqlite3 && npm run build", true);
 
         currentVersion = GetVersion();
         updateAvailable = false;
@@ -390,42 +415,43 @@ class ClaudeBotTray : Form
 
         if (File.Exists(traySrc))
         {
-            // CSC 경로 찾기용 bat 스크립트 생성
+            string updateLog = Path.Combine(botDir, "update.log");
             string batContent =
                 "@echo off\r\n" +
-                "chcp 65001 >nul 2>&1\r\n" +
                 "setlocal enabledelayedexpansion\r\n" +
-                ":: Kill all tray processes and wait\r\n" +
+                "set \"LOG=" + updateLog + "\"\r\n" +
+                "echo [%date% %time%] Update started > \"%LOG%\"\r\n" +
                 "taskkill /f /im ClaudeBotTray.exe >nul 2>&1\r\n" +
                 "timeout /t 3 /nobreak >nul\r\n" +
-                ":: Delete old exe\r\n" +
                 "del \"" + trayExe + "\" >nul 2>&1\r\n" +
-                ":: Find csc.exe\r\n" +
                 "set \"CSC=\"\r\n" +
                 "for /f \"delims=\" %%i in ('dir /b /s \"%WINDIR%\\Microsoft.NET\\Framework64\\csc.exe\" 2^>nul') do set \"CSC=%%i\"\r\n" +
                 "if \"!CSC!\"==\"\" (\r\n" +
                 "    for /f \"delims=\" %%i in ('dir /b /s \"%WINDIR%\\Microsoft.NET\\Framework\\csc.exe\" 2^>nul') do set \"CSC=%%i\"\r\n" +
                 ")\r\n" +
-                ":: Compile new tray exe\r\n" +
-                "if not \"!CSC!\"==\"\" (\r\n" +
-                "    \"!CSC!\" /nologo /target:winexe /out:\"" + trayExe + "\" /reference:System.Windows.Forms.dll /reference:System.Drawing.dll \"" + traySrc + "\"\r\n" +
+                "if \"!CSC!\"==\"\" (\r\n" +
+                "    echo [%date% %time%] ERROR: csc.exe not found >> \"%LOG%\"\r\n" +
+                "    goto :done\r\n" +
                 ")\r\n" +
-                ":: Restart tray with --show\r\n" +
+                "echo [%date% %time%] Compiling with !CSC! >> \"%LOG%\"\r\n" +
+                "\"!CSC!\" /nologo /target:winexe /out:\"" + trayExe + "\" /reference:System.Windows.Forms.dll /reference:System.Drawing.dll \"" + traySrc + "\" >> \"%LOG%\" 2>&1\r\n" +
                 "if exist \"" + trayExe + "\" (\r\n" +
+                "    echo [%date% %time%] Compile OK, restarting >> \"%LOG%\"\r\n" +
                 "    start \"\" \"" + trayExe + "\" --show\r\n" +
+                ") else (\r\n" +
+                "    echo [%date% %time%] ERROR: Compile failed >> \"%LOG%\"\r\n" +
                 ")\r\n" +
-                ":: Bot will be auto-started by tray app on launch\r\n";
-
-            batContent += "del \"" + updateBat + "\" >nul 2>&1\r\n";
+                ":done\r\n";
 
             File.WriteAllText(updateBat, batContent);
 
-            // VBS로 bat을 숨겨서 실행
-            string vbs = Path.Combine(botDir, ".tray-update.vbs");
-            File.WriteAllText(vbs,
-                "Set ws = CreateObject(\"WScript.Shell\")\n" +
-                "ws.Run \"cmd /c \"\"" + updateBat + "\"\"\", 0, False\n");
-            Process.Start("wscript", "\"" + vbs + "\"");
+            // Run update bat as independent process (survives parent exit)
+            var psi = new ProcessStartInfo("cmd.exe", "/c \"" + updateBat + "\"")
+            {
+                WindowStyle = ProcessWindowStyle.Hidden,
+                UseShellExecute = true,
+            };
+            Process.Start(psi);
 
             // 자기 자신 종료 (bat이 대기 후 처리)
             trayIcon.Visible = false;
@@ -1099,6 +1125,11 @@ class ClaudeBotTray : Form
         SetDarkTitleBar(controlPanel);
 
         RebuildControlPanel();
+        // Fetch usage if stale (>5 min) when panel opens
+        if (usageLastFetched == null || (DateTime.Now - usageLastFetched.Value).TotalSeconds > 300)
+        {
+            new Thread(() => { try { FetchUsage(); } catch { } }) { IsBackground = true }.Start();
+        }
         controlPanel.ShowDialog();
         controlPanel = null;
     }
@@ -1224,6 +1255,111 @@ class ClaudeBotTray : Form
         statusPanel.Controls.Add(statusLabel);
         controlPanel.Controls.Add(statusPanel);
         y += 62;
+
+        // Claude Code Usage section
+        if (usageFiveHour >= 0 || usageSevenDay >= 0 || usageSevenDaySonnet >= 0)
+        {
+            EventHandler openUsagePage = (s, ev) => { Process.Start("https://claude.ai/settings/usage"); };
+
+            var usageLabel = new Label()
+            {
+                Text = L("Claude Code Usage", "Claude Code 사용량"),
+                Left = 25, Top = y, Width = btnWidth, Height = 20,
+                Font = new Font(FontFamily.GenericSansSerif, 9.5f, FontStyle.Bold),
+                ForeColor = FgWhite, BackColor = Color.Transparent,
+                Cursor = Cursors.Hand
+            };
+            usageLabel.Click += openUsagePage;
+            controlPanel.Controls.Add(usageLabel);
+            y += 24;
+
+            // Usage bars
+            string[][] usageItems = new string[][] {
+                new string[] { L("Session 5hr", "세션 5시간"), usageFiveHour.ToString("F3"), usageFiveHourReset },
+                new string[] { L("Weekly 7day", "주간 7일"), usageSevenDay.ToString("F3"), usageSevenDayReset },
+                new string[] { L("Weekly Sonnet", "주간 Sonnet"), usageSevenDaySonnet.ToString("F3"), usageSevenDaySonnetReset }
+            };
+            double[] usageValues = new double[] { usageFiveHour, usageSevenDay, usageSevenDaySonnet };
+
+            for (int i = 0; i < 3; i++)
+            {
+                if (usageValues[i] < 0) continue;
+                double pct = usageValues[i];
+                int pctInt = (int)(pct * 100);
+                Color barColor = pct < 0.5 ? AccentBlue : pct < 0.8 ? Color.FromArgb(220, 160, 50) : Color.FromArgb(220, 80, 80);
+
+                // Label + percentage
+                string resetInfo = usageItems[i][2].Length > 0 ? "  (" + usageItems[i][2] + ")" : "";
+                var itemLabel = new Label()
+                {
+                    Text = usageItems[i][0] + ":  " + pctInt + "%" + resetInfo,
+                    Left = 25, Top = y, Width = btnWidth, Height = 16,
+                    Font = new Font(FontFamily.GenericSansSerif, 8.5f),
+                    ForeColor = FgGray, BackColor = Color.Transparent,
+                    Cursor = Cursors.Hand
+                };
+                itemLabel.Click += openUsagePage;
+                controlPanel.Controls.Add(itemLabel);
+                y += 18;
+
+                // Progress bar background
+                int barWidth = btnWidth;
+                int barHeight = 10;
+                var barBg = new Panel() { Left = 25, Top = y, Width = barWidth, Height = barHeight, BackColor = BgPanel, Cursor = Cursors.Hand };
+                using (var rr = RoundedRect(new Rectangle(0, 0, barWidth, barHeight), 4))
+                    barBg.Region = new Region(rr);
+                barBg.Click += openUsagePage;
+                controlPanel.Controls.Add(barBg);
+
+                // Progress bar fill
+                int fillWidth = Math.Max(1, (int)(barWidth * Math.Min(pct, 1.0)));
+                var barFill = new Panel() { Left = 0, Top = 0, Width = fillWidth, Height = barHeight, BackColor = barColor, Cursor = Cursors.Hand };
+                if (fillWidth >= 8)
+                {
+                    using (var rr = RoundedRect(new Rectangle(0, 0, fillWidth, barHeight), 4))
+                        barFill.Region = new Region(rr);
+                }
+                barFill.Click += openUsagePage;
+                barBg.Controls.Add(barFill);
+
+                y += 18;
+            }
+
+            // Last fetched time
+            string lastFetchedText = FormatLastFetched();
+            if (lastFetchedText.Length > 0)
+            {
+                var fetchedLabel = new Label()
+                {
+                    Text = lastFetchedText,
+                    Left = 25, Top = y, Width = btnWidth, Height = 14,
+                    Font = new Font(FontFamily.GenericSansSerif, 7.5f),
+                    ForeColor = FgDimGray, BackColor = Color.Transparent,
+                    TextAlign = ContentAlignment.MiddleRight,
+                    Cursor = Cursors.Hand
+                };
+                fetchedLabel.Click += openUsagePage;
+                controlPanel.Controls.Add(fetchedLabel);
+                y += 16;
+            }
+
+            // Refresh usage button
+            var refreshUsageBtn = MakeDarkButton(L("Refresh Usage", "사용량 새로고침"), 25, y, btnWidth, 32, BgButton, FgGray);
+            refreshUsageBtn.Font = new Font(FontFamily.GenericSansSerif, 8.5f);
+            refreshUsageBtn.Click += (s, ev) => {
+                FetchUsage();
+            };
+            controlPanel.Controls.Add(refreshUsageBtn);
+            y += 42;
+        }
+        else
+        {
+            // Show fetch button when no data yet
+            var fetchUsageBtn = MakeDarkButton(L("Load Usage Info", "사용량 정보 불러오기"), 25, y, btnWidth, 36, BgButton, FgWhite);
+            fetchUsageBtn.Click += (s, ev) => { FetchUsage(true); };
+            controlPanel.Controls.Add(fetchUsageBtn);
+            y += 46;
+        }
 
         // Bot control buttons
         if (hasEnv)
@@ -1401,6 +1537,248 @@ class ClaudeBotTray : Form
         }
 
         controlPanel.ResumeLayout(true);
+    }
+
+    private bool RefreshOAuthToken(string credPath, string credJson)
+    {
+        try
+        {
+            var refreshMatch = Regex.Match(credJson, "\"refreshToken\"\\s*:\\s*\"([^\"]+)\"");
+            if (!refreshMatch.Success) return false;
+            string refreshToken = refreshMatch.Groups[1].Value;
+
+            string postData = "grant_type=refresh_token"
+                + "&refresh_token=" + Uri.EscapeDataString(refreshToken)
+                + "&client_id=" + Uri.EscapeDataString("9d1c250a-e61b-44d9-88ed-5944d1962f5e")
+                + "&scope=" + Uri.EscapeDataString("user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload");
+
+            var request = (HttpWebRequest)WebRequest.Create("https://platform.claude.com/v1/oauth/token");
+            request.Method = "POST";
+            request.Timeout = 15000;
+            request.ContentType = "application/x-www-form-urlencoded";
+            byte[] data = System.Text.Encoding.UTF8.GetBytes(postData);
+            request.ContentLength = data.Length;
+            using (var stream = request.GetRequestStream())
+                stream.Write(data, 0, data.Length);
+
+            using (var response = (HttpWebResponse)request.GetResponse())
+            using (var reader = new StreamReader(response.GetResponseStream()))
+            {
+                string json = reader.ReadToEnd();
+
+                var newAccessMatch = Regex.Match(json, "\"access_token\"\\s*:\\s*\"([^\"]+)\"");
+                var newRefreshMatch = Regex.Match(json, "\"refresh_token\"\\s*:\\s*\"([^\"]+)\"");
+                var expiresInMatch = Regex.Match(json, "\"expires_in\"\\s*:\\s*(\\d+)");
+                if (!newAccessMatch.Success) return false;
+
+                string newAccess = newAccessMatch.Groups[1].Value;
+                string newRefresh = newRefreshMatch.Success ? newRefreshMatch.Groups[1].Value : refreshToken;
+                long newExpiresAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() + (expiresInMatch.Success ? long.Parse(expiresInMatch.Groups[1].Value) * 1000 : 3600000);
+
+                // Update credentials.json
+                string updated = credJson;
+                updated = Regex.Replace(updated, "\"accessToken\"\\s*:\\s*\"[^\"]+\"", "\"accessToken\":\"" + newAccess + "\"");
+                updated = Regex.Replace(updated, "\"refreshToken\"\\s*:\\s*\"[^\"]+\"", "\"refreshToken\":\"" + newRefresh + "\"");
+                updated = Regex.Replace(updated, "\"expiresAt\"\\s*:\\s*\\d+", "\"expiresAt\":" + newExpiresAt);
+                File.WriteAllText(credPath, updated);
+                return true;
+            }
+        }
+        catch (Exception ex)
+        {
+            try { File.AppendAllText(Path.Combine(botDir, "usage-error.log"), DateTime.Now + ": OAuth refresh failed: " + ex.Message + "\n"); } catch { }
+            return false;
+        }
+    }
+
+    private bool IsTokenExpired(string credJson)
+    {
+        var expiresMatch = Regex.Match(credJson, "\"expiresAt\"\\s*:\\s*(\\d+)");
+        if (!expiresMatch.Success) return false;
+        long expiresAt = long.Parse(expiresMatch.Groups[1].Value);
+        long nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        return nowMs >= (expiresAt - 300000); // 5분 여유
+    }
+
+    private void FetchUsage(bool openPageOnFail = false)
+    {
+        bool success = false;
+        try
+        {
+            ServicePointManager.SecurityProtocol = SecurityProtocolType.Tls12 | SecurityProtocolType.Tls13;
+            string home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+            string credPath = Path.Combine(home, ".claude", ".credentials.json");
+            if (!File.Exists(credPath)) { if (openPageOnFail) Process.Start("https://claude.ai/settings/usage"); return; }
+
+            string credJson = File.ReadAllText(credPath);
+
+            // 토큰 만료 시 자동 갱신
+            if (IsTokenExpired(credJson))
+            {
+                if (RefreshOAuthToken(credPath, credJson))
+                    credJson = File.ReadAllText(credPath);
+            }
+
+            var tokenMatch = Regex.Match(credJson, "\"accessToken\"\\s*:\\s*\"([^\"]+)\"");
+            if (!tokenMatch.Success) { if (openPageOnFail) Process.Start("https://claude.ai/settings/usage"); return; }
+            string token = tokenMatch.Groups[1].Value;
+
+            string usageJson = null;
+            try
+            {
+                usageJson = FetchUsageApi(token);
+            }
+            catch (WebException wex)
+            {
+                var httpResp = wex.Response as HttpWebResponse;
+                if (httpResp != null && (httpResp.StatusCode == HttpStatusCode.Unauthorized || (int)httpResp.StatusCode == 429))
+                {
+                    // 401/429 → 토큰 갱신 후 재시도
+                    if (RefreshOAuthToken(credPath, credJson))
+                    {
+                        credJson = File.ReadAllText(credPath);
+                        tokenMatch = Regex.Match(credJson, "\"accessToken\"\\s*:\\s*\"([^\"]+)\"");
+                        if (tokenMatch.Success)
+                            usageJson = FetchUsageApi(tokenMatch.Groups[1].Value);
+                    }
+                }
+                if (usageJson == null) throw;
+            }
+
+            ParseUsageJson(usageJson);
+            usageLastFetched = DateTime.Now;
+            SaveUsageCache(usageJson);
+            success = true;
+
+            // Refresh panel if open
+            if (controlPanel != null && !controlPanel.IsDisposed)
+            {
+                if (controlPanel.InvokeRequired)
+                    controlPanel.Invoke(new Action(() => RebuildControlPanel()));
+                else
+                    RebuildControlPanel();
+            }
+        }
+        catch (Exception ex)
+        {
+            try { File.AppendAllText(Path.Combine(botDir, "usage-error.log"), DateTime.Now + ": " + ex.Message + "\n"); } catch { }
+            if (openPageOnFail) Process.Start("https://claude.ai/settings/usage");
+        }
+    }
+
+    private string FetchUsageApi(string token)
+    {
+        var request = (HttpWebRequest)WebRequest.Create("https://api.anthropic.com/api/oauth/usage");
+        request.Method = "GET";
+        request.Timeout = 10000;
+        request.Headers.Add("Authorization", "Bearer " + token);
+        request.Headers.Add("anthropic-beta", "oauth-2025-04-20");
+
+        using (var response = (HttpWebResponse)request.GetResponse())
+        using (var reader = new StreamReader(response.GetResponseStream()))
+            return reader.ReadToEnd();
+    }
+
+    private void ParseUsageJson(string json)
+    {
+        // Parse five_hour, seven_day, seven_day_sonnet utilization and resets_at
+        usageFiveHour = ParseUtilization(json, "five_hour");
+        usageSevenDay = ParseUtilization(json, "seven_day");
+        usageSevenDaySonnet = ParseUtilization(json, "seven_day_sonnet");
+        usageFiveHourReset = ParseResetTime(json, "five_hour");
+        usageSevenDayReset = ParseResetTime(json, "seven_day");
+        usageSevenDaySonnetReset = ParseResetTime(json, "seven_day_sonnet");
+    }
+
+    private int FindSectionIndex(string json, string section)
+    {
+        // For "seven_day", must not match "seven_day_sonnet"
+        string pattern = "\"" + Regex.Escape(section) + "\"\\s*:";
+        var m = Regex.Match(json, pattern);
+        if (!m.Success) return -1;
+        return m.Index;
+    }
+
+    private double ParseUtilization(string json, string section)
+    {
+        int idx = FindSectionIndex(json, section);
+        if (idx < 0) return -1;
+        string sub = json.Substring(idx, Math.Min(200, json.Length - idx));
+        var m = Regex.Match(sub, "\"utilization\"\\s*:\\s*([\\d.]+)");
+        if (!m.Success) return -1;
+        double val;
+        if (double.TryParse(m.Groups[1].Value, NumberStyles.Float, CultureInfo.InvariantCulture, out val))
+            return val / 100.0;
+        return -1;
+    }
+
+    private string ParseResetTime(string json, string section)
+    {
+        int idx = FindSectionIndex(json, section);
+        if (idx < 0) return "";
+        string sub = json.Substring(idx, Math.Min(300, json.Length - idx));
+        var m = Regex.Match(sub, "\"resets_at\"\\s*:\\s*\"([^\"]+)\"");
+        if (!m.Success) return "";
+        return FormatResetTime(m.Groups[1].Value);
+    }
+
+    private string FormatResetTime(string iso8601)
+    {
+        try
+        {
+            var resetTime = DateTime.Parse(iso8601, null, DateTimeStyles.RoundtripKind);
+            var diff = resetTime.ToUniversalTime() - DateTime.UtcNow;
+            if (diff.TotalMinutes < 1) return L("soon", "곧");
+            if (diff.TotalHours < 1) return string.Format(L("Reset in {0}m", "{0}분 후 초기화"), (int)diff.TotalMinutes);
+            return string.Format(L("Reset in {0}h", "{0}시간 후 초기화"), (int)Math.Ceiling(diff.TotalHours));
+        }
+        catch { return ""; }
+    }
+
+    private string UsageCachePath
+    {
+        get { return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".claude", ".usage-cache.json"); }
+    }
+
+    private void SaveUsageCache(string json)
+    {
+        try
+        {
+            // Append _fetched_at timestamp to the raw JSON
+            string timestamp = DateTime.UtcNow.ToString("o");
+            string cached = json.TrimEnd().TrimEnd('}') + ",\"_fetched_at\":\"" + timestamp + "\"}";
+            File.WriteAllText(UsageCachePath, cached);
+        }
+        catch { }
+    }
+
+    private void LoadUsageCache()
+    {
+        try
+        {
+            if (!File.Exists(UsageCachePath)) return;
+            string json = File.ReadAllText(UsageCachePath);
+            ParseUsageJson(json);
+
+            // Parse _fetched_at
+            var m = Regex.Match(json, "\"_fetched_at\"\\s*:\\s*\"([^\"]+)\"");
+            if (m.Success)
+            {
+                DateTime dt;
+                if (DateTime.TryParse(m.Groups[1].Value, null, DateTimeStyles.RoundtripKind, out dt))
+                    usageLastFetched = dt.ToLocalTime();
+            }
+        }
+        catch { }
+    }
+
+    private string FormatLastFetched()
+    {
+        if (usageLastFetched == null) return "";
+        var ago = (int)(DateTime.Now - usageLastFetched.Value).TotalSeconds;
+        if (ago < 60) return L("Updated just now", "방금 갱신됨");
+        if (ago < 3600) return string.Format(L("Updated {0}m ago", "{0}분 전 갱신"), ago / 60);
+        return string.Format(L("Updated {0}h ago", "{0}시간 전 갱신"), ago / 3600);
     }
 
     private void QuitAll(object sender, EventArgs e)

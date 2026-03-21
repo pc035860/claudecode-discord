@@ -204,6 +204,7 @@ Example: If `BASE_PROJECT_DIR=/Users/you/projects`, then `/register my-app` → 
 - **EN / KR language toggle** with persistent preference
 - First run opens control panel automatically; prompts GUI settings dialog if `.env` not configured
 - Menu bar icon: 🟢 running / 🔴 stopped / ⚙️ setup needed
+- **Claude Code usage dashboard**: Session (5hr) / Weekly (7day) / Weekly Sonnet usage shown as color-coded progress bars — auto-refreshes every 5 minutes, cached to `~/.claude/.usage-cache.json`, click to open [claude.ai/settings/usage](https://claude.ai/settings/usage)
 - GUI Settings dialog with folder browser — no manual `.env` editing needed:
 
 <p align="center">
@@ -223,7 +224,9 @@ Example: If `BASE_PROJECT_DIR=/Users/you/projects`, then `/register my-app` → 
 ```
 
 - **EN / KR language toggle** with persistent preference
-- System tray icon: green (running) / red (stopped) / orange (setup needed), with start/stop/settings menu
+- **Control Panel GUI**: left-click tray icon to open GTK3 control panel window (right-click for dropdown menu)
+- System tray icon: green (running) / red (stopped) / orange (setup needed)
+- **Claude Code usage dashboard**: Session (5hr) / Weekly (7day) / Weekly Sonnet usage shown as color-coded progress bars — auto-refreshes every 5 minutes, cached to `~/.claude/.usage-cache.json`, click to open [claude.ai/settings/usage](https://claude.ai/settings/usage)
 - GUI Settings dialog with folder browser (GTK3)
 - Auto-restarts on crash, auto-starts on boot (via systemd)
 - Tray requires `pip3 install pystray Pillow` (auto-installed on first run)
@@ -292,6 +295,7 @@ When Claude requests file edits, creation, or command execution, buttons appear:
 | `/auto-approve mode:on\|off` | Toggle auto-approval |
 | `/sessions` | List sessions to resume or delete |
 | `/clear-sessions` | Delete all sessions for the project |
+| `/usage` | Show Claude Code usage (Session 5hr / Weekly / Sonnet) |
 
 ---
 

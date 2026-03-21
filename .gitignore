@@ -23,3 +23,5 @@ specs/handover/*
 specs/auto-implement/*
 rules/output-styles/*.md
 !rules/output-styles/seed.md
+usage-debug.log
+usage-error.log

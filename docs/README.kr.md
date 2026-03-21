@@ -66,6 +66,7 @@ Discord는 단순한 채팅 앱이 아니라, AI 에이전트 제어에 놀라�
 - 📨 작업 중 메시지 큐 (현재 작업 완료 후 자동 처리)
 - ⏱️ 실시간 진행 상황 표시 (도구 사용 현황, 경과 시간)
 - 🔒 유저 화이트리스트, 레이트리밋, 경로 보안, 중복 실행 방지
+- 📊 **Claude Code 사용량 대시보드** — 컨트롤 패널에서 세션(5시간), 주간(7일), 주간 Sonnet 사용량을 프로그레스 바로 표시, 5분마다 자동 갱신, 클릭 시 사용량 페이지 열기
 
 ## 기술 스택
 
@@ -116,7 +117,7 @@ claudecode-discord/
 │   ├── index.ts                # 엔트리포인트
 │   ├── bot/
 │   │   ├── client.ts           # Discord 봇 초기화 & 이벤트
-│   │   ├── commands/           # 슬래시 명령어 (9개)
+│   │   ├── commands/           # 슬래시 명령어 (10개)
 │   │   └── handlers/           # 메시지 & 인터랙션 핸들러
 │   ├── claude/
 │   │   ├── session-manager.ts  # 세션 생명주기 관리
@@ -142,6 +143,7 @@ claudecode-discord/
 | `/auto-approve on\|off` | 자동 승인 토글 | `/auto-approve on` |
 | `/sessions` | 기존 세션 목록 조회, 재개 또는 삭제 | |
 | `/last` | 현재 세션의 마지막 Claude 응답 전체 확인 | |
+| `/usage` | Claude Code 사용량 확인 (세션 5시간 / 주간 / 소네트) | |
 | `/queue list` | 대기 중인 메시지 목록 확인 (개별 또는 전체 취소) | |
 | `/queue clear` | 대기 중인 메시지 모두 취소 | |
 | `/clear-sessions` | 해당 프로젝트의 모든 세션 일괄 삭제 | |
@@ -220,7 +222,7 @@ claudecode-discord/
 ### macOS — 메뉴바 앱
 
 <p align="center">
-  <img src="mac-tray.png" alt="macOS 컨트롤 패널" width="400">
+  <img src="mac-tray-kr.png" alt="macOS 컨트롤 패널" width="400">
 </p>
 
 ```bash
@@ -228,12 +230,12 @@ claudecode-discord/
 ./mac-start.sh --stop   # 중지
 ```
 
-컨트롤 패널 GUI, 설정 다이얼로그, 자동 업데이트, 크래시 자동 재시작, 부팅 시 자동 실행 (launchd). → **[전체 가이드](SETUP.kr.md)**
+컨트롤 패널 GUI (아이콘 클릭), **Claude Code 사용량 대시보드** (세션 5시간 / 주간 / Sonnet, 클릭 시 사용량 페이지 열기), 설정 다이얼로그, 자동 업데이트, 크래시 자동 재시작, 부팅 시 자동 실행 (launchd). → **[전체 가이드](SETUP.kr.md)**
 
-### Linux — 시스템 트레이
+### Linux — 시스템 트레이 + 컨트롤 패널
 
 <p align="center">
-  <img src="linux-tray.png" alt="Linux 시스템 트레이" width="350">
+  <img src="linux-tray-kr.png" alt="Linux 시스템 트레이" width="350">
 </p>
 
 ```bash
@@ -241,12 +243,12 @@ claudecode-discord/
 ./linux-start.sh --stop   # 중지
 ```
 
-GTK3 설정 다이얼로그, 자동 재시작, 부팅 시 자동 실행 (systemd). 헤드리스 서버에서도 동작. → **[전체 가이드](SETUP.kr.md)**
+GTK3 **컨트롤 패널** (트레이 아이콘 클릭), **Claude Code 사용량 대시보드**, 설정 다이얼로그, 자동 재시작, 부팅 시 자동 실행 (systemd). 헤드리스 서버에서도 동작. → **[전체 가이드](SETUP.kr.md)**
 
 ### Windows — 시스템 트레이 + 컨트롤 패널
 
 <p align="center">
-  <img src="windows-tray.png" alt="Windows 컨트롤 패널" width="400">
+  <img src="windows-tray-kr.png" alt="Windows 컨트롤 패널" width="400">
 </p>
 
 ```batch
@@ -254,7 +256,7 @@ win-start.bat          &:: 시작 (백그라운드 + 트레이 + 컨트롤 패�
 win-start.bat --stop   &:: 중지
 ```
 
-바탕화면 바로가기, 컨트롤 패널 GUI, 설정 다이얼로그, 자동 업데이트, 로그온 시 자동 시작 (Registry). → **[전체 가이드](SETUP-WINDOWS.kr.md)**
+바탕화면 바로가기, 컨트롤 패널 GUI, **Claude Code 사용량 대시보드**, 설정 다이얼로그, 자동 업데이트, 로그온 시 자동 시작 (Registry). → **[전체 가이드](SETUP-WINDOWS.kr.md)**
 
 ## 개발 명령어
 

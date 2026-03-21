@@ -67,6 +67,7 @@ Discord isn't just a chat app — it's a surprisingly perfect fit for controllin
 - 🔄 Session resume/delete/new (persist across bot restarts, last conversation preview)
 - ⏱️ Real-time progress display (tool usage, elapsed time)
 - 🔒 User whitelist, rate limiting, path security, duplicate instance prevention
+- 📊 **Claude Code usage dashboard** in control panel — Session (5hr), Weekly (7day), Weekly Sonnet with progress bars, auto-refresh, click to open usage page
 
 ## Tech Stack
 
@@ -117,7 +118,7 @@ claudecode-discord/
 │   ├── index.ts                # Entry point
 │   ├── bot/
 │   │   ├── client.ts           # Discord bot init & events
-│   │   ├── commands/           # Slash commands (8)
+│   │   ├── commands/           # Slash commands (10)
 │   │   └── handlers/           # Message & interaction handlers
 │   ├── claude/
 │   │   ├── session-manager.ts  # Session lifecycle
@@ -143,6 +144,7 @@ claudecode-discord/
 | `/auto-approve on\|off` | Toggle auto-approval | `/auto-approve on` |
 | `/sessions` | List sessions to resume or delete | |
 | `/last` | Show the last Claude response from current session | |
+| `/usage` | Show Claude Code usage (Session 5hr / Weekly / Sonnet) | |
 | `/queue list` | View queued messages (cancel individually or all) | |
 | `/queue clear` | Cancel all queued messages | |
 | `/clear-sessions` | Delete all session files for the project | |
@@ -229,9 +231,9 @@ Each platform runs the bot as a background service with a native GUI for control
 ./mac-start.sh --stop   # Stop
 ```
 
-Control panel GUI, settings dialog, auto-update, auto-restart on crash, auto-start on boot (launchd). → **[Full guide](SETUP.md)**
+Control panel GUI (left-click icon), **Claude Code usage dashboard** (Session 5hr / Weekly / Sonnet, click to open usage page), settings dialog, auto-update, auto-restart on crash, auto-start on boot (launchd). → **[Full guide](SETUP.md)**
 
-### Linux — System Tray
+### Linux — System Tray + Control Panel
 
 <p align="center">
   <img src="docs/linux-tray.png" alt="Linux System Tray" width="350">
@@ -242,7 +244,7 @@ Control panel GUI, settings dialog, auto-update, auto-restart on crash, auto-sta
 ./linux-start.sh --stop   # Stop
 ```
 
-System tray with GTK3 settings dialog, auto-restart, auto-start on boot (systemd). Works headless too. → **[Full guide](SETUP.md)**
+GTK3 **control panel** (left-click tray icon), **Claude Code usage dashboard**, settings dialog, auto-restart, auto-start on boot (systemd). Works headless too. → **[Full guide](SETUP.md)**
 
 ### Windows — System Tray + Control Panel
 
@@ -255,7 +257,7 @@ win-start.bat          &:: Start (background + tray + control panel)
 win-start.bat --stop   &:: Stop
 ```
 
-Desktop shortcut, control panel GUI, settings dialog, auto-update, auto-start on logon (Registry). → **[Full guide](docs/SETUP-WINDOWS.md)**
+Desktop shortcut, control panel GUI, **Claude Code usage dashboard**, settings dialog, auto-update, auto-start on logon (Registry). → **[Full guide](docs/SETUP-WINDOWS.md)**
 
 ## Development
 
