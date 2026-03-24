@@ -5,6 +5,12 @@
 不使用原本的 `mac-start.sh`，改用 PM2 管理：
 
 ```bash
+# 首次註冊
+npm run build
+pm2 start dist/index.js --name claudecode-discord
+pm2 save
+
+# 日常操作
 pm2 restart claudecode-discord   # 重啟
 pm2 logs claudecode-discord      # 看 log
 pm2 stop claudecode-discord      # 停止
@@ -15,11 +21,6 @@ pm2 stop claudecode-discord      # 停止
 ```bash
 npm run build && pm2 restart claudecode-discord
 ```
-
-> **重要**：`pm2 restart` 可以在 Claude Code 內執行，不會汙染環境變數。
-> PM2 儲存的是初次 `pm2 start` 時的環境，restart 不會繼承當前 shell 的 env。
-> 但 **`pm2 start`（首次註冊）必須在 Claude Code 外的 terminal 執行**，
-> 否則 `CLAUDECODE=1` 會被存入 PM2，導致 SDK 拒絕啟動 nested session。
 
 ## 設定文件
 
