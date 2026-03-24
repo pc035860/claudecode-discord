@@ -63,9 +63,12 @@ Discord isn't just a chat app — it's a surprisingly perfect fit for controllin
 - ✅ Tool use approve/deny via Discord button UI
 - ❓ Interactive question UI (selectable options + custom text input)
 - ⏹️ Stop button for instant cancellation during progress, message queue for sequential tasks
-- 📎 File attachments support (images, documents, code files)
-- 🔄 Session resume/delete/new (persist across bot restarts, last conversation preview)
+- 📎 File attachments support (images, documents, code files — Claude can also attach files in responses)
+- 🔄 Session resume/delete/new/rename (persist across bot restarts, last conversation preview)
 - ⏱️ Real-time progress display (tool usage, elapsed time)
+- 🧵 **Thread progress** — auto-created Discord thread with live tool calls and assistant text streaming
+- 🎭 **Output styles** — per-channel persona switching via `/output-styles`
+- ⚙️ **Configurable model & effort** — set `CLAUDE_MODEL` and `CLAUDE_EFFORT` in `.env`
 - 🔒 User whitelist, rate limiting, path security, duplicate instance prevention
 - 📊 **Claude Code usage dashboard** in control panel — Session (5hr), Weekly (7day), Weekly Sonnet with progress bars, auto-refresh, click to open usage page
 
@@ -114,18 +117,22 @@ claudecode-discord/
 ├── win-start.bat               # Windows background launcher + system tray
 ├── menubar/                    # macOS menu bar app (Swift)
 ├── tray/                       # System tray app (Linux: Python, Windows: C#)
+├── rules/
+│   ├── BOT.md                  # Bot behavior rules (injected into system prompt)
+│   └── output-styles/          # Per-channel personas (seed, etc.)
 ├── src/
 │   ├── index.ts                # Entry point
 │   ├── bot/
 │   │   ├── client.ts           # Discord bot init & events
-│   │   ├── commands/           # Slash commands (10)
+│   │   ├── commands/           # Slash commands (13)
 │   │   └── handlers/           # Message & interaction handlers
 │   ├── claude/
 │   │   ├── session-manager.ts  # Session lifecycle
-│   │   └── output-formatter.ts # Discord output formatting
+│   │   ├── output-formatter.ts # Discord output formatting
+│   │   └── thread-reporter.ts  # Thread progress (tool calls & text streaming)
 │   ├── db/                     # SQLite (better-sqlite3)
 │   ├── security/               # Auth, rate limit, path validation
-│   └── utils/                  # Config (zod)
+│   └── utils/                  # Config (zod), rules-loader
 ├── SETUP.md                    # macOS/Linux setup guide
 ├── docs/                       # Translations, screenshots
 └── package.json
@@ -141,8 +148,11 @@ claudecode-discord/
 | `/unregister` | Unlink channel | |
 | `/status` | Check all session statuses | |
 | `/stop` | Stop current channel's session | |
+| `/new-session` | Start a new session in this channel | |
 | `/auto-approve on\|off` | Toggle auto-approval | `/auto-approve on` |
 | `/sessions` | List sessions to resume or delete | |
+| `/rename-session <name>` | Rename current session | `/rename-session my-feature` |
+| `/output-styles <style>` | Set channel persona (Manage Channels) | `/output-styles seed` |
 | `/last` | Show the last Claude response from current session | |
 | `/usage` | Show Claude Code usage (Session 5hr / Weekly / Sonnet) | |
 | `/queue list` | View queued messages (cancel individually or all) | |
@@ -258,6 +268,25 @@ win-start.bat --stop   &:: Stop
 ```
 
 Desktop shortcut, control panel GUI, **Claude Code usage dashboard**, settings dialog, auto-update, auto-start on logon (Registry). → **[Full guide](docs/SETUP-WINDOWS.md)**
+
+## Running with PM2
+
+An alternative to the native tray app. If you don't need the GUI to start/restart the server, [PM2](https://pm2.keymetrics.io/) lets you manage the process entirely from the command line — meaning you can modify code and restart the bot remotely (e.g., via Claude Code on Discord) without being physically at the machine.
+
+```bash
+# First time: register with PM2
+npm run build
+pm2 start dist/index.js --name claudecode-discord
+pm2 save
+
+# Daily operations
+pm2 restart claudecode-discord   # Restart
+pm2 logs claudecode-discord      # View logs
+pm2 stop claudecode-discord      # Stop
+
+# After code changes
+npm run build && pm2 restart claudecode-discord
+```
 
 ## Development
 
