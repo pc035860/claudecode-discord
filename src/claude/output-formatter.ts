@@ -1,12 +1,116 @@
 import {
+  AttachmentBuilder,
   EmbedBuilder,
   ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
+  type TextChannel,
 } from "discord.js";
+import path from "node:path";
+import fs from "node:fs";
 import { L } from "../utils/i18n.js";
 
 export const MAX_DISCORD_LENGTH = 1900; // leave room for formatting
+
+const ALLOWED_PREFIXES = ["/tmp", "/private/tmp"]; // macOS /tmp -> /private/tmp
+const MAX_ATTACHMENTS = 10;
+
+// Returns the realpath-resolved path when it falls inside `allowed`, else
+// null. Callers must use the returned string (not the raw input) for any
+// subsequent reads, otherwise a symlink swap between check and use would
+// bypass the allowlist.
+function resolveIfAllowed(
+  filePath: string,
+  allowed: readonly string[],
+): string | null {
+  let resolved: string;
+  try {
+    resolved = fs.realpathSync(filePath);
+  } catch {
+    resolved = path.resolve(filePath);
+  }
+  const ok = allowed.some(
+    (prefix) => resolved.startsWith(prefix + "/") || resolved === prefix,
+  );
+  return ok ? resolved : null;
+}
+
+export function extractAttachments(text: string): {
+  cleanText: string;
+  attachmentPaths: string[];
+} {
+  const attachmentPaths: string[] = [];
+  const cleanText = text
+    .replace(/^[ \t]*[-*]\s*\[ATTACH:\s*([^\]\r\n]+)\]\s*$/gm, (_, p) => {
+      attachmentPaths.push(p.trim());
+      return "";
+    })
+    .replace(/\s*\[ATTACH:\s*([^\]\r\n]+)\]\s*/g, (_, p) => {
+      attachmentPaths.push(p.trim());
+      return " ";
+    })
+    .replace(/  +/g, " ")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+  return { cleanText, attachmentPaths };
+}
+
+export async function sendAttachments(
+  channel: Pick<TextChannel, "send">,
+  attachmentPaths: string[],
+  projectPath?: string,
+): Promise<void> {
+  const unique = [...new Set(attachmentPaths)];
+  const capped = unique.slice(0, MAX_ATTACHMENTS);
+  if (unique.length > MAX_ATTACHMENTS) {
+    console.warn(
+      `[attach] Too many attachments (${unique.length}), sending first ${MAX_ATTACHMENTS}`,
+    );
+  }
+
+  const allowed = projectPath
+    ? [...ALLOWED_PREFIXES, path.resolve(projectPath)]
+    : ALLOWED_PREFIXES;
+
+  const skipWith = async (filePath: string, en: string, kr: string) => {
+    console.warn(`[attach] ${en}: ${filePath}`);
+    await channel.send(
+      L(`⚠️ ${en}: \`${filePath}\``, `⚠️ ${kr}: \`${filePath}\``),
+    );
+  };
+
+  const validFiles: AttachmentBuilder[] = [];
+  for (const filePath of capped) {
+    const resolved = resolveIfAllowed(filePath, allowed);
+    if (resolved === null) {
+      await skipWith(
+        filePath,
+        "Attachment blocked (outside allowed paths)",
+        "첨부 파일 차단 (路徑不在允許範圍)",
+      );
+      continue;
+    }
+    if (!fs.existsSync(resolved)) {
+      await skipWith(filePath, "Attachment not found", "첨부 파일不存在");
+      continue;
+    }
+    validFiles.push(new AttachmentBuilder(resolved));
+  }
+
+  if (validFiles.length > 0) {
+    try {
+      await channel.send({ files: validFiles });
+    } catch (e) {
+      console.warn(
+        `[attach] Failed to send attachments:`,
+        e instanceof Error ? e.message : e,
+      );
+      await channel.send(
+        L(`⚠️ Failed to send attachment(s)`, `⚠️ 첨부 파일 전송 실패`),
+      );
+    }
+  }
+}
 
 export function splitMessage(text: string): string[] {
   const chunks: string[] = [];

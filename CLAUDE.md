@@ -84,18 +84,23 @@ const result = await run.wait();
 - ❌ `/auto-approve` 指令、AskUserQuestion 互動 UI
 - ❌ `/rename-session` 指令（Cursor SDK 無 rename API）
 - ❌ `/last`、`/clear-sessions` 指令（依賴 Claude JSONL on-disk）
-- ❌ `/output-styles` 指令、`rules/BOT.md` 注入（Cursor 沒有 `systemPrompt.append`）
+- ❌ `/output-styles` 指令
 - ❌ `/sessions` 預覽 + Delete 按鈕（Cursor SQLite-backed，無 JSONL）
-- ❌ `[ATTACH:]` outbound 標記（Cursor 不認識此慣例）
 
-未來若要重接：tool-gating 可走 `.cursor/hooks.json` 或 `permissions.json`；persona 注入可考慮 `AGENTS.md` 或 prepend prompt。
+未來若要重接：tool-gating 可走 `.cursor/hooks.json` 或 `permissions.json`。
 
-## 附件上傳功能（inbound）
+## 附件上傳功能
 
-使用者在 Discord 上傳的檔案會自動下載到 `<project>/.claude-uploads/`，並在 prompt 前綴 `[Attached images/files]` 提示 Cursor 用 `read` 工具讀取。這個 inbound 流程 **保留**；outbound `[ATTACH:]` 已停用。
+**Inbound**：使用者在 Discord 上傳的檔案會自動下載到 `<project>/.claude-uploads/`，並在 prompt 前綴 `[Attached images/files]` 提示 Cursor 用 `read` 工具讀取。
 
 - 相關程式碼：`src/bot/handlers/message.ts`（`downloadAttachment`）
-- Bot 仍需要 Discord `Attach Files` 權限（見 SETUP.md）
+- Bot 需要 Discord `Attach Files` 權限（見 SETUP.md）
+
+**Outbound `[ATTACH:]`**：Cursor agent 可在回應中寫 `[ATTACH: /絕對路徑]` 把產出的圖／檔送回 Discord。
+- 指令注入：`rules/BOT.md` 在 module load 讀進 `BOT_RULES` 常數，fresh session（`!resumeAgentId`）第一個 prompt 前 prepend。Cursor SDK 沒 `systemPrompt` API，resume 路徑相信 conversation history 留住慣例。
+- 解析：`extractAttachments()` 在 `run.wait()` 後從最終文字撈路徑、產出 cleanText。
+- 上傳：`sendAttachments()` 在 result embed 前送出，含 whitelist（`/tmp`、`/private/tmp`、`project_path`，`fs.realpathSync` 防 symlink escape）+ dedupe + 10 個上限。
+- 相關程式碼：`src/claude/output-formatter.ts`、`src/claude/session-manager.ts`、`rules/BOT.md`
 
 ## Thread Progress（討論串進度）
 
@@ -119,6 +124,8 @@ Cursor SDK 的 `RunResult` 目前不提供 cost。`SHOW_COST=true` 時 footer �
 - **`L()` 每次都讀 `.tray-lang`**：不可把 `L(en, kr)` 結果 cache 進 module-scope 常數（會凍結語言）。`TOOL_LABELS` 用 `() => L(...)` thunks 就是這原因。
 - **DB schema 演進**：用 `ALTER TABLE ... ADD COLUMN`（try-catch on duplicate column），不要砍 column（legacy `session_id`、`auto_approve`、`output_style` 都保留）。
 - **`run.wait()` 要分流 status**：`cancelled` 跳過 result embed（讓 `/stop` 的 offline 維持），`error` 顯示 ❌ + offline，其他才走 success path。漏判會把 cancelled 寫成 idle 蓋掉 stop。
+- **tsup 打包成單檔 → module 相對路徑深度不同**：`src/claude/foo.ts` 在 dev 跑（tsx）時 `import.meta.url` 指 `src/claude/`，但 prod 全部 bundle 到 `dist/index.js`（flat）。要讀 repo 相對檔（`rules/BOT.md`、`.tray-lang` …）必須 try 多個候選深度（`../../X` 給 tsx，`../X` 給 dist），別只寫一個就 ship。可參考 `BOT_RULES` IIFE（`session-manager.ts`）。
+- **`realpathSync` 結果要往下游傳**：用 realpath 解析 + allowlist 檢查通過後，後續 `fs.existsSync` / `new AttachmentBuilder(...)` 都要用 **resolved 路徑**而不是原始輸入，否則 symlink 在驗證和讀取之間被換掉就會繞過 allowlist。`resolveIfAllowed` 回傳 `string | null` 就是強制這個 contract（`output-formatter.ts`）。
 
 ## Migration history
 

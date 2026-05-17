@@ -5,6 +5,9 @@ import {
   type SDKAgent,
 } from "@cursor/sdk";
 import { randomUUID } from "node:crypto";
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import type { TextChannel } from "discord.js";
 import {
   upsertSession,
@@ -19,7 +22,30 @@ import {
   createResultEmbed,
   createStopButton,
   createCompletedButton,
+  extractAttachments,
+  sendAttachments,
 } from "./output-formatter.js";
+
+// tsup bundles to a flat dist/index.js, so depth from this module to repo
+// root differs between tsx (src/claude/) and prod (dist/). Try both.
+const BOT_RULES = (() => {
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  const candidates = [
+    path.join(here, "..", "..", "rules", "BOT.md"),
+    path.join(here, "..", "rules", "BOT.md"),
+  ];
+  for (const p of candidates) {
+    try {
+      return fs.readFileSync(p, "utf8").trim();
+    } catch {
+      // try next
+    }
+  }
+  console.warn(
+    `[bot-rules] rules/BOT.md not found in candidates: ${candidates.join(", ")} — outbound [ATTACH:] convention will not be taught to fresh sessions.`,
+  );
+  return "";
+})();
 
 interface ActiveSession {
   agent: SDKAgent | null;
@@ -203,7 +229,14 @@ class SessionManager {
         return;
       }
 
-      const run = await agent.send(prompt);
+      // No systemPrompt API in Cursor SDK — prepend on fresh only; resume
+      // relies on conversation history to retain the convention.
+      const augmentedPrompt =
+        !resumeAgentId && BOT_RULES
+          ? `${BOT_RULES}\n\n---\n\n${prompt}`
+          : prompt;
+
+      const run = await agent.send(augmentedPrompt);
       placeholder.run = run;
 
       // If user pressed Stop during agent.send, cancel immediately.
@@ -281,8 +314,23 @@ class SessionManager {
       }
 
       const resultText = final.result || L("Task completed", "작업 완료");
+      const { cleanText, attachmentPaths } = extractAttachments(resultText);
+
+      if (attachmentPaths.length > 0) {
+        await sendAttachments(
+          channel,
+          attachmentPaths,
+          project.project_path,
+        ).catch((e) => {
+          console.warn(
+            `[attach] sendAttachments failed for ${channelId}:`,
+            e instanceof Error ? e.message : e,
+          );
+        });
+      }
+
       const resultEmbed = createResultEmbed(
-        resultText,
+        cleanText,
         0,
         final.durationMs ?? Date.now() - startTime,
         config.SHOW_COST,

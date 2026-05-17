@@ -61,14 +61,14 @@ Discord isn't just a chat app — it's a surprisingly perfect fit for controllin
 - 📱 Remote control a Cursor SDK agent from Discord (desktop/web/mobile)
 - 🔀 Independent sessions per channel (project directory mapping)
 - ⏹️ Stop button for instant cancellation during progress, message queue for sequential tasks
-- 📎 Discord file attachments → downloaded to `<project>/.claude-uploads/` and prompted for the agent to read
+- 📎 File attachments — inbound: Discord uploads downloaded to `<project>/.claude-uploads/`; outbound: agent emits `[ATTACH: /abs/path]` markers, bot uploads with `/tmp` + project-path allowlist
 - 🔄 Session resume across bot restarts (Cursor agents listed via `Agent.list`)
 - ⏱️ Real-time progress display (tool usage, elapsed time)
 - 🧵 **Thread progress** — auto-created Discord thread with live tool calls and assistant text streaming
 - ⚙️ **Configurable model** — set `CURSOR_MODEL` (default `composer-2-fast`) and `CURSOR_MODEL_PARAMS` in `.env`; `/cursor-models` lists available models
 - 🔒 User whitelist, rate limiting, path security
 
-> **MVP-trimmed features** (vs the previous Claude Code SDK build): per-tool interactive approval (Cursor SDK has no `canUseTool` callback — runs in full-allow mode), `/auto-approve`, `/rename-session`, `/last`, `/clear-sessions`, `/output-styles`, persona/output-style injection, `[ATTACH:]` outbound markers, `/sessions` preview + delete buttons.
+> **MVP-trimmed features** (vs the previous Claude Code SDK build): per-tool interactive approval (Cursor SDK has no `canUseTool` callback — runs in full-allow mode), `/auto-approve`, `/rename-session`, `/last`, `/clear-sessions`, `/output-styles`, output-style injection, `/sessions` preview + delete buttons.
 
 ## Tech Stack
 
