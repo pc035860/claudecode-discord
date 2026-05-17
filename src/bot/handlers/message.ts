@@ -80,16 +80,6 @@ export async function handleMessage(message: Message): Promise<void> {
     return;
   }
 
-  // Check for pending custom text input (AskUserQuestion "직접 입력")
-  if (sessionManager.hasPendingCustomInput(message.channelId)) {
-    const text = message.content.trim();
-    if (text) {
-      sessionManager.resolveCustomInput(message.channelId, text);
-      await message.react("✅");
-    }
-    return;
-  }
-
   let prompt = message.content.trim();
 
   // Download attachments (images, documents, code files, etc.)

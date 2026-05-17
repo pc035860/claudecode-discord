@@ -6,8 +6,9 @@
 
 [![CI](https://github.com/chadingTV/claudecode-discord/actions/workflows/ci.yml/badge.svg)](https://github.com/chadingTV/claudecode-discord/actions)
 
-Control Claude Code from your phone — a multi-machine agent hub via Discord.
-**No API key needed — works with your existing Claude Pro or Max subscription.**
+Control a Cursor SDK agent from your phone — a multi-machine agent hub via Discord.
+
+> **Migrated to Cursor Agent SDK (`@cursor/sdk` ~1.0.13).** Previously used `@anthropic-ai/claude-agent-sdk`; some interactive features were trimmed during the swap. Requires a `CURSOR_API_KEY` (Cursor Dashboard → Integrations) and Node ≥ 22.
 
 <p align="center">
   <img src="docs/demo.gif" alt="Demo — register a project and code with Claude from Discord" width="300">
@@ -57,28 +58,25 @@ Discord isn't just a chat app — it's a surprisingly perfect fit for controllin
 
 ## Features
 
-- 💰 **No API key** — runs on Claude Code CLI with your Pro or Max subscription
-- 📱 Remote control Claude Code from Discord (desktop/web/mobile)
+- 📱 Remote control a Cursor SDK agent from Discord (desktop/web/mobile)
 - 🔀 Independent sessions per channel (project directory mapping)
-- ✅ Tool use approve/deny via Discord button UI
-- ❓ Interactive question UI (selectable options + custom text input)
 - ⏹️ Stop button for instant cancellation during progress, message queue for sequential tasks
-- 📎 File attachments support (images, documents, code files — Claude can also attach files in responses)
-- 🔄 Session resume/delete/new/rename (persist across bot restarts, last conversation preview)
+- 📎 Discord file attachments → downloaded to `<project>/.claude-uploads/` and prompted for the agent to read
+- 🔄 Session resume across bot restarts (Cursor agents listed via `Agent.list`)
 - ⏱️ Real-time progress display (tool usage, elapsed time)
 - 🧵 **Thread progress** — auto-created Discord thread with live tool calls and assistant text streaming
-- 🎭 **Output styles** — per-channel persona switching via `/output-styles`
-- ⚙️ **Configurable model & effort** — set `CLAUDE_MODEL` and `CLAUDE_EFFORT` in `.env`
-- 🔒 User whitelist, rate limiting, path security, duplicate instance prevention
-- 📊 **Claude Code usage dashboard** in control panel — Session (5hr), Weekly (7day), Weekly Sonnet with progress bars, auto-refresh, click to open usage page
+- ⚙️ **Configurable model** — set `CURSOR_MODEL` (default `composer-2-fast`) and `CURSOR_MODEL_PARAMS` in `.env`; `/cursor-models` lists available models
+- 🔒 User whitelist, rate limiting, path security
+
+> **MVP-trimmed features** (vs the previous Claude Code SDK build): per-tool interactive approval (Cursor SDK has no `canUseTool` callback — runs in full-allow mode), `/auto-approve`, `/rename-session`, `/last`, `/clear-sessions`, `/output-styles`, persona/output-style injection, `[ATTACH:]` outbound markers, `/sessions` preview + delete buttons.
 
 ## Tech Stack
 
 | Category | Technology |
 |----------|------------|
-| Runtime | Node.js 20+, TypeScript |
+| Runtime | Node.js 22+, TypeScript |
 | Discord | discord.js v14 |
-| AI | @anthropic-ai/claude-agent-sdk |
+| AI | @cursor/sdk (~1.0.13) |
 | DB | better-sqlite3 (SQLite) |
 | Validation | zod v4 |
 | Build | tsup (ESM) |
@@ -147,17 +145,13 @@ claudecode-discord/
 | `/register <folder>` | Link current channel to a project | `/register my-project` |
 | `/unregister` | Unlink channel | |
 | `/status` | Check all session statuses | |
-| `/stop` | Stop current channel's session | |
+| `/stop` | Stop current channel's session (`run.cancel()`) | |
 | `/new-session` | Start a new session in this channel | |
-| `/auto-approve on\|off` | Toggle auto-approval | `/auto-approve on` |
-| `/sessions` | List sessions to resume or delete | |
-| `/rename-session <name>` | Rename current session | `/rename-session my-feature` |
-| `/output-styles <style>` | Set channel persona (Manage Channels) | `/output-styles seed` |
-| `/last` | Show the last Claude response from current session | |
-| `/usage` | Show Claude Code usage (Session 5hr / Weekly / Sonnet) | |
+| `/sessions` | List Cursor agents to resume | |
+| `/cursor-models` | List available Cursor SDK models | |
+| `/usage` | Show Claude Code usage (legacy, separate OAuth) | |
 | `/queue list` | View queued messages (cancel individually or all) | |
 | `/queue clear` | Cancel all queued messages | |
-| `/clear-sessions` | Delete all session files for the project | |
 
 The `/register` command shows an **autocomplete dropdown** listing subdirectories under `BASE_PROJECT_DIR` — just start typing to filter and select.
 The first option `.` registers the base directory itself. You can also type a custom path; absolute paths work too.

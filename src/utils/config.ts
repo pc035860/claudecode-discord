@@ -13,19 +13,31 @@ const envSchema = z.object({
     .enum(["true", "false"])
     .default("true")
     .transform((v) => v === "true"),
-  CLAUDE_MODEL: z.string().default("claude-sonnet-4-6"),
-  CLAUDE_EFFORT: z.enum(["low", "medium", "high"]).default("medium"),
+  CURSOR_API_KEY: z.string().min(1, "CURSOR_API_KEY is required"),
+  CURSOR_MODEL: z.string().default("composer-2-fast"),
+  CURSOR_MODEL_PARAMS: z
+    .string()
+    .optional()
+    .transform((v, ctx) => {
+      if (!v || v.trim() === "") return undefined;
+      const schema = z.array(
+        z.object({ id: z.string(), value: z.string() }),
+      );
+      try {
+        return schema.parse(JSON.parse(v));
+      } catch {
+        ctx.addIssue({
+          code: "custom",
+          message:
+            'CURSOR_MODEL_PARAMS must be a JSON array of {id,value} objects, e.g. \'[{"id":"thinking","value":"high"}]\'',
+        });
+        return z.NEVER;
+      }
+    }),
   THREAD_PROGRESS: z
     .enum(["true", "false"])
     .default("false")
     .transform((v) => v === "true"),
-  CLAUDE_CODE_AUTO_COMPACT_WINDOW: z
-    .string()
-    .optional()
-    .transform((v) => (v && v.trim() !== "" ? Number(v) : undefined))
-    .refine((v) => v === undefined || (Number.isInteger(v) && v > 0), {
-      message: "CLAUDE_CODE_AUTO_COMPACT_WINDOW must be a positive integer",
-    }),
 });
 
 export type Config = z.infer<typeof envSchema>;

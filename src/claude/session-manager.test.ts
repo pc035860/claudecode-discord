@@ -1,6 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
-// Mock all external dependencies before importing session-manager
 vi.mock("../utils/i18n.js", () => ({
   L: (en: string, _kr: string) => en,
 }));
@@ -10,20 +9,28 @@ vi.mock("../db/database.js", () => ({
   updateSessionStatus: vi.fn(),
   getProject: vi.fn(),
   getSession: vi.fn(),
-  setAutoApprove: vi.fn(),
 }));
 
 vi.mock("../utils/config.js", () => ({
-  getConfig: vi.fn(() => ({ SHOW_COST: true })),
+  getConfig: vi.fn(() => ({
+    SHOW_COST: true,
+    CURSOR_API_KEY: "test-key",
+    CURSOR_MODEL: "composer-2-fast",
+    CURSOR_MODEL_PARAMS: undefined,
+    THREAD_PROGRESS: false,
+  })),
 }));
 
-vi.mock("@anthropic-ai/claude-agent-sdk", () => ({
-  query: vi.fn(),
+vi.mock("@cursor/sdk", () => ({
+  Agent: {
+    create: vi.fn(),
+    resume: vi.fn(),
+    list: vi.fn(),
+  },
 }));
 
 import { sessionManager, formatToolDetail, parseApiError } from "./session-manager.js";
 
-// Helper to create a mock TextChannel
 function mockChannel(id: string) {
   return { id, send: vi.fn().mockResolvedValue({ edit: vi.fn() }) } as any;
 }
@@ -33,54 +40,11 @@ describe("SessionManager", () => {
     vi.clearAllMocks();
   });
 
-  // ─── isActive ───
-
   describe("isActive", () => {
     it("returns false for unknown channel", () => {
       expect(sessionManager.isActive("unknown-channel")).toBe(false);
     });
   });
-
-  // ─── resolveApproval ───
-
-  describe("resolveApproval", () => {
-    it("returns false for unknown requestId", () => {
-      expect(sessionManager.resolveApproval("nonexistent", "approve")).toBe(false);
-    });
-  });
-
-  // ─── resolveQuestion ───
-
-  describe("resolveQuestion", () => {
-    it("returns false for unknown requestId", () => {
-      expect(sessionManager.resolveQuestion("nonexistent", "answer")).toBe(false);
-    });
-  });
-
-  // ─── Custom input ───
-
-  describe("custom input", () => {
-    it("hasPendingCustomInput returns false initially", () => {
-      expect(sessionManager.hasPendingCustomInput("ch-1")).toBe(false);
-    });
-
-    it("enableCustomInput sets pending state", () => {
-      sessionManager.enableCustomInput("req-1", "ch-1");
-      expect(sessionManager.hasPendingCustomInput("ch-1")).toBe(true);
-    });
-
-    it("resolveCustomInput returns false when no pending question", () => {
-      sessionManager.enableCustomInput("req-no-question", "ch-2");
-      // There's a custom input pending but no matching question in pendingQuestions
-      expect(sessionManager.resolveCustomInput("ch-2", "hello")).toBe(false);
-    });
-
-    it("resolveCustomInput returns false for channel without pending input", () => {
-      expect(sessionManager.resolveCustomInput("ch-no-input", "hello")).toBe(false);
-    });
-  });
-
-  // ─── Message queue ───
 
   describe("message queue", () => {
     const channelId = "queue-ch";
@@ -141,8 +105,6 @@ describe("SessionManager", () => {
     });
   });
 
-  // ─── stopSession ───
-
   describe("stopSession", () => {
     it("returns false for inactive session", async () => {
       expect(await sessionManager.stopSession("no-session")).toBe(false);
@@ -150,106 +112,94 @@ describe("SessionManager", () => {
   });
 });
 
-// ─── formatToolDetail ───
-
-describe("formatToolDetail", () => {
-  it("returns question headers for AskUserQuestion", () => {
-    expect(formatToolDetail("AskUserQuestion", {
-      questions: [{ header: "Auth" }, { header: "DB" }],
-    })).toBe("Auth, DB");
+describe("formatToolDetail (Cursor tools)", () => {
+  it("returns [type] description for task with subagent_type", () => {
+    expect(
+      formatToolDetail("task", {
+        description: "explore code",
+        subagent_type: "researcher",
+      }),
+    ).toBe("[researcher] explore code");
   });
 
-  it("returns [type] description for Agent with subagent_type", () => {
-    expect(formatToolDetail("Agent", {
-      description: "explore code",
-      subagent_type: "researcher",
-    })).toBe("[researcher] explore code");
+  it("returns description for task without subagent_type", () => {
+    expect(formatToolDetail("task", { description: "explore code" })).toBe(
+      "explore code",
+    );
   });
 
-  it("returns description for Agent without subagent_type", () => {
-    expect(formatToolDetail("Agent", {
-      description: "explore code",
-    })).toBe("explore code");
-  });
-
-  it("truncates Agent description at 80 chars", () => {
+  it("truncates task description at 80 chars", () => {
     const long = "x".repeat(100);
-    const result = formatToolDetail("Agent", { description: long });
-    expect(result).toBe("x".repeat(80));
+    expect(formatToolDetail("task", { description: long })).toBe("x".repeat(80));
   });
 
-  it("returns #id → status for TaskUpdate", () => {
-    expect(formatToolDetail("TaskUpdate", { id: "t1", status: "done" })).toBe("#t1 → done");
+  it("returns backtick-wrapped command for shell tool", () => {
+    expect(formatToolDetail("shell", { command: "ls -la" })).toBe("`ls -la`");
   });
 
-  it("returns #id for TaskUpdate without status", () => {
-    expect(formatToolDetail("TaskUpdate", { id: "t1" })).toBe("#t1");
-  });
-
-  it("returns #id for TaskOutput", () => {
-    expect(formatToolDetail("TaskOutput", { id: "t2" })).toBe("#t2");
-  });
-
-  it("returns backtick-wrapped file_path", () => {
-    expect(formatToolDetail("Read", { file_path: "/a/b.ts" })).toBe("`/a/b.ts`");
-  });
-
-  it("returns backtick-wrapped command truncated at 100", () => {
+  it("truncates command at 100 chars", () => {
     const long = "x".repeat(150);
-    const result = formatToolDetail("Bash", { command: long });
-    expect(result).toBe("`" + "x".repeat(100) + "`");
+    expect(formatToolDetail("shell", { command: long })).toBe(
+      "`" + "x".repeat(100) + "`",
+    );
   });
 
-  it("returns url truncated at 120", () => {
+  it("returns backtick-wrapped file_path for read/write/edit", () => {
+    expect(formatToolDetail("read", { file_path: "/a/b.ts" })).toBe("`/a/b.ts`");
+    expect(formatToolDetail("write", { file_path: "/a/b.ts" })).toBe("`/a/b.ts`");
+    expect(formatToolDetail("edit", { file_path: "/a/b.ts" })).toBe("`/a/b.ts`");
+  });
+
+  it("returns backtick-wrapped path for ls", () => {
+    expect(formatToolDetail("ls", { path: "/src" })).toBe("`/src`");
+  });
+
+  it("returns pattern with path for grep", () => {
+    expect(formatToolDetail("grep", { pattern: "*.ts", path: "/src" })).toBe(
+      "`*.ts` in `/src`",
+    );
+  });
+
+  it("returns pattern alone for glob", () => {
+    expect(formatToolDetail("glob", { pattern: "**/*.ts" })).toBe("`**/*.ts`");
+  });
+
+  it("returns quoted query for semSearch", () => {
+    expect(formatToolDetail("semSearch", { query: "auth flow" })).toBe(
+      '"auth flow"',
+    );
+  });
+
+  it("returns url truncated at 120 chars", () => {
     const long = "https://" + "x".repeat(150);
-    const result = formatToolDetail("WebFetch", { url: long });
+    const result = formatToolDetail("mcp", { url: long });
     expect(result.length).toBe(120);
   });
 
-  it("returns pattern with path", () => {
-    expect(formatToolDetail("Grep", { pattern: "*.ts", path: "/src" })).toBe('`*.ts` in `/src`');
-  });
-
-  it("returns pattern without path", () => {
-    expect(formatToolDetail("Grep", { pattern: "*.ts" })).toBe("`*.ts`");
-  });
-
-  it("returns quoted query", () => {
-    expect(formatToolDetail("WebSearch", { query: "search term" })).toBe('"search term"');
-  });
-
-  it("returns skill name", () => {
-    expect(formatToolDetail("Skill", { skill: "coding" })).toBe("coding");
-  });
-
-  it("returns quoted prompt", () => {
-    expect(formatToolDetail("SomeTool", { prompt: "build feature" })).toBe('"build feature"');
-  });
-
-  it("returns generic description (non-Agent)", () => {
-    expect(formatToolDetail("SomeTool", { description: "do stuff" })).toBe("do stuff");
-  });
-
   it("returns empty string for empty input", () => {
-    expect(formatToolDetail("Unknown", {})).toBe("");
+    expect(formatToolDetail("unknown", {})).toBe("");
   });
 
-  it("file_path takes priority over command", () => {
-    expect(formatToolDetail("Tool", { file_path: "/a.ts", command: "ls" })).toBe("`/a.ts`");
+  it("command takes priority over generic description", () => {
+    expect(
+      formatToolDetail("shell", { command: "ls", description: "list files" }),
+    ).toBe("`ls`");
   });
 });
-
-// ─── parseApiError ───
 
 describe("parseApiError", () => {
   it("extracts error.message from API error JSON", () => {
     const input = 'API Error: 429 {"error":{"message":"rate limited"}}';
-    expect(parseApiError(input)).toBe("API Error 429: rate limited. Please try again later.");
+    expect(parseApiError(input)).toBe(
+      "API Error 429: rate limited. Please try again later.",
+    );
   });
 
   it("extracts top-level message from API error JSON", () => {
     const input = 'API Error: 500 {"message":"internal"}';
-    expect(parseApiError(input)).toBe("API Error 500: internal. Please try again later.");
+    expect(parseApiError(input)).toBe(
+      "API Error 500: internal. Please try again later.",
+    );
   });
 
   it("falls back to status code for unparseable JSON", () => {
@@ -268,6 +218,8 @@ describe("parseApiError", () => {
 
   it("handles multiline JSON body (dotall flag)", () => {
     const input = 'API Error: 429\n{"error":{"message":"wait"}}';
-    expect(parseApiError(input)).toBe("API Error 429: wait. Please try again later.");
+    expect(parseApiError(input)).toBe(
+      "API Error 429: wait. Please try again later.",
+    );
   });
 });

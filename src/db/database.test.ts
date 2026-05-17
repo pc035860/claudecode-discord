@@ -90,25 +90,26 @@ describe("database", () => {
     });
 
     it("upsertSession + getSession", () => {
-      upsertSession("s1", "ch1", "sdk-session-1", "online");
+      upsertSession("s1", "ch1", "cursor-agent-1", "online");
       const session = getSession("ch1");
       expect(session).toBeDefined();
-      expect(session!.session_id).toBe("sdk-session-1");
+      expect(session!.agent_id).toBe("cursor-agent-1");
+      expect(session!.session_id).toBeNull();
       expect(session!.status).toBe("online");
     });
 
     it("upsertSession replaces existing session with same id", () => {
       upsertSession("s1", "ch1", null, "online");
-      upsertSession("s1", "ch1", "sdk-1", "idle");
+      upsertSession("s1", "ch1", "cursor-agent-1", "idle");
       const session = getSession("ch1");
-      expect(session!.session_id).toBe("sdk-1");
+      expect(session!.agent_id).toBe("cursor-agent-1");
       expect(session!.status).toBe("idle");
     });
 
-    it("upsertSession with null sessionId", () => {
+    it("upsertSession with null agentId", () => {
       upsertSession("s1", "ch1", null, "online");
       const session = getSession("ch1");
-      expect(session!.session_id).toBeNull();
+      expect(session!.agent_id).toBeNull();
     });
 
     it("updateSessionStatus changes status", () => {

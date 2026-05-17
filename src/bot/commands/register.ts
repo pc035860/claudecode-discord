@@ -76,7 +76,6 @@ export async function execute(
         color: 0x00ff00,
         fields: [
           { name: L("Status", "상태"), value: L("🔴 Offline", "🔴 오프라인"), inline: true },
-          { name: L("Auto-approve", "자동 승인"), value: L("Off", "꺼짐"), inline: true },
         ],
       },
     ],

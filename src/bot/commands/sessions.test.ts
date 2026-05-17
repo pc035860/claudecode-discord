@@ -1,168 +1,158 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import fs from "node:fs";
-import path from "node:path";
-import os from "node:os";
-import {
-  findSessionDir,
-  getLastAssistantMessage,
-  getLastAssistantMessageFull,
-} from "./sessions.js";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 
-// Mock database imports used by the module
 vi.mock("../../db/database.js", () => ({
   getProject: vi.fn(),
   getSession: vi.fn(),
+  upsertSession: vi.fn(),
 }));
 
-// ─── findSessionDir ───
+vi.mock("../../utils/config.js", () => ({
+  getConfig: vi.fn(() => ({ CURSOR_API_KEY: "test-key" })),
+}));
 
-describe("findSessionDir", () => {
-  afterEach(() => {
-    vi.restoreAllMocks();
+vi.mock("../../utils/i18n.js", () => ({
+  L: (en: string, _kr: string) => en,
+}));
+
+vi.mock("@cursor/sdk", () => ({
+  Agent: {
+    list: vi.fn(),
+  },
+}));
+
+import { Agent } from "@cursor/sdk";
+import { getProject, getSession } from "../../db/database.js";
+import { execute } from "./sessions.js";
+
+function mockInteraction(channelId: string) {
+  return {
+    channelId,
+    editReply: vi.fn().mockResolvedValue(undefined),
+  } as any;
+}
+
+describe("/sessions command", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
   });
 
-  it("returns null when ~/.claude/projects does not exist", () => {
-    vi.spyOn(os, "homedir").mockReturnValue("/fake/home");
-    vi.spyOn(fs, "existsSync").mockReturnValue(false);
-    expect(findSessionDir("/my/project")).toBeNull();
-  });
-
-  it("returns encoded path when simple conversion matches", () => {
-    vi.spyOn(os, "homedir").mockReturnValue("/fake/home");
-    vi.spyOn(fs, "existsSync").mockImplementation((p) => {
-      const ps = String(p);
-      if (ps === "/fake/home/.claude/projects") return true;
-      if (ps === "/fake/home/.claude/projects/-my-project") return true;
-      return false;
-    });
-    expect(findSessionDir("/my/project")).toBe(
-      "/fake/home/.claude/projects/-my-project",
+  it("replies with error when channel not registered", async () => {
+    vi.mocked(getProject).mockReturnValue(undefined);
+    const interaction = mockInteraction("ch-1");
+    await execute(interaction);
+    expect(interaction.editReply).toHaveBeenCalledWith(
+      expect.objectContaining({
+        content: expect.stringContaining("not registered"),
+      }),
     );
   });
 
-  it("returns null when no matching directory found", () => {
-    vi.spyOn(os, "homedir").mockReturnValue("/fake/home");
-    vi.spyOn(fs, "existsSync").mockImplementation((p) => {
-      const ps = String(p);
-      return ps === "/fake/home/.claude/projects";
+  it("shows 'new session' embed when no agents exist", async () => {
+    vi.mocked(getProject).mockReturnValue({
+      channel_id: "ch-1",
+      project_path: "/proj",
+      guild_id: "g-1",
+      auto_approve: 0,
+      output_style: "seed",
+      created_at: "",
     });
-    vi.spyOn(fs, "readdirSync").mockReturnValue([] as unknown as ReturnType<typeof fs.readdirSync>);
-    expect(findSessionDir("/unknown/project")).toBeNull();
-  });
-});
-
-// ─── getLastAssistantMessage ───
-
-describe("getLastAssistantMessage", () => {
-  let tmpDir: string;
-
-  beforeEach(() => {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "sessions-test-"));
+    vi.mocked(Agent.list).mockResolvedValue({ items: [] });
+    const interaction = mockInteraction("ch-1");
+    await execute(interaction);
+    const call = interaction.editReply.mock.calls[0][0];
+    expect(call.embeds[0].title).toContain("New Session");
   });
 
-  afterEach(() => {
-    fs.rmSync(tmpDir, { recursive: true, force: true });
-  });
-
-  function writeJsonl(filename: string, lines: unknown[]): string {
-    const filePath = path.join(tmpDir, filename);
-    fs.writeFileSync(filePath, lines.map((l) => JSON.stringify(l)).join("\n"));
-    return filePath;
-  }
-
-  it("returns last assistant text (last line of last message)", async () => {
-    const file = writeJsonl("test.jsonl", [
-      { type: "assistant", message: { content: [{ type: "text", text: "First" }] } },
-      { type: "assistant", message: { content: [{ type: "text", text: "Second" }] } },
-    ]);
-    expect(await getLastAssistantMessage(file)).toBe("Second");
-  });
-
-  it("handles string content", async () => {
-    const file = writeJsonl("test.jsonl", [
-      { type: "assistant", message: { content: "Simple string" } },
-    ]);
-    expect(await getLastAssistantMessage(file)).toBe("Simple string");
-  });
-
-  it("returns last line of multi-line text", async () => {
-    const file = writeJsonl("test.jsonl", [
-      { type: "assistant", message: { content: [{ type: "text", text: "Line 1\nLine 2\nLine 3" }] } },
-    ]);
-    expect(await getLastAssistantMessage(file)).toBe("Line 3");
-  });
-
-  it("returns '(no message)' when no assistant messages", async () => {
-    const file = writeJsonl("test.jsonl", [
-      { type: "user", message: { content: "hello" } },
-    ]);
-    expect(await getLastAssistantMessage(file)).toBe("(no message)");
-  });
-
-  it("skips malformed JSON lines", async () => {
-    const filePath = path.join(tmpDir, "test.jsonl");
-    const lines = [
-      "not json",
-      JSON.stringify({ type: "assistant", message: { content: [{ type: "text", text: "Valid" }] } }),
-      "{broken",
-    ];
-    fs.writeFileSync(filePath, lines.join("\n"));
-    expect(await getLastAssistantMessage(filePath)).toBe("Valid");
-  });
-
-  it("skips assistant messages with empty/whitespace text", async () => {
-    const file = writeJsonl("test.jsonl", [
-      { type: "assistant", message: { content: [{ type: "text", text: "Good" }] } },
-      { type: "assistant", message: { content: [{ type: "text", text: "   \n  " }] } },
-    ]);
-    expect(await getLastAssistantMessage(file)).toBe("Good");
-  });
-
-  it("handles multiple text blocks in content array", async () => {
-    const file = writeJsonl("test.jsonl", [
-      {
-        type: "assistant",
-        message: {
-          content: [
-            { type: "text", text: "Part A " },
-            { type: "text", text: "Part B" },
-          ],
+  it("renders select menu with active marker", async () => {
+    vi.mocked(getProject).mockReturnValue({
+      channel_id: "ch-1",
+      project_path: "/proj",
+      guild_id: "g-1",
+      auto_approve: 0,
+      output_style: "seed",
+      created_at: "",
+    });
+    vi.mocked(getSession).mockReturnValue({
+      id: "row-1",
+      channel_id: "ch-1",
+      session_id: null,
+      agent_id: "agent-active",
+      status: "idle",
+      last_activity: null,
+      created_at: "",
+    });
+    vi.mocked(Agent.list).mockResolvedValue({
+      items: [
+        {
+          agentId: "agent-active",
+          name: "Active session",
+          summary: "summary",
+          lastModified: Date.now(),
         },
-      },
-    ]);
-    expect(await getLastAssistantMessage(file)).toBe("Part A Part B");
-  });
-});
-
-// ─── getLastAssistantMessageFull ───
-
-describe("getLastAssistantMessageFull", () => {
-  let tmpDir: string;
-
-  beforeEach(() => {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "sessions-test-"));
-  });
-
-  afterEach(() => {
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+        {
+          agentId: "agent-other",
+          name: "Other session",
+          summary: "summary",
+          lastModified: Date.now() - 3600_000,
+        },
+      ],
+    } as any);
+    const interaction = mockInteraction("ch-1");
+    await execute(interaction);
+    const call = interaction.editReply.mock.calls[0][0];
+    expect(call.embeds[0].description).toContain("2");
+    expect(call.components).toBeDefined();
   });
 
-  it("returns full text instead of just last line", async () => {
-    const filePath = path.join(tmpDir, "test.jsonl");
-    const line = JSON.stringify({
-      type: "assistant",
-      message: { content: [{ type: "text", text: "Line 1\nLine 2\nLine 3" }] },
+  it("filters out archived agents", async () => {
+    vi.mocked(getProject).mockReturnValue({
+      channel_id: "ch-1",
+      project_path: "/proj",
+      guild_id: "g-1",
+      auto_approve: 0,
+      output_style: "seed",
+      created_at: "",
     });
-    fs.writeFileSync(filePath, line);
-    const result = await getLastAssistantMessageFull(filePath);
-    expect(result).toContain("Line 1");
-    expect(result).toContain("Line 2");
-    expect(result).toContain("Line 3");
+    vi.mocked(getSession).mockReturnValue(undefined);
+    vi.mocked(Agent.list).mockResolvedValue({
+      items: [
+        {
+          agentId: "agent-1",
+          name: "Active",
+          summary: "",
+          lastModified: Date.now(),
+        },
+        {
+          agentId: "agent-2",
+          name: "Archived",
+          summary: "",
+          lastModified: Date.now(),
+          archived: true,
+        },
+      ],
+    } as any);
+    const interaction = mockInteraction("ch-1");
+    await execute(interaction);
+    const call = interaction.editReply.mock.calls[0][0];
+    expect(call.embeds[0].description).toContain("1");
   });
 
-  it("returns '(no message)' when no assistant messages", async () => {
-    const filePath = path.join(tmpDir, "test.jsonl");
-    fs.writeFileSync(filePath, JSON.stringify({ type: "user", message: { content: "hi" } }));
-    expect(await getLastAssistantMessageFull(filePath)).toBe("(no message)");
+  it("handles Agent.list errors gracefully", async () => {
+    vi.mocked(getProject).mockReturnValue({
+      channel_id: "ch-1",
+      project_path: "/proj",
+      guild_id: "g-1",
+      auto_approve: 0,
+      output_style: "seed",
+      created_at: "",
+    });
+    vi.mocked(Agent.list).mockRejectedValue(new Error("network down"));
+    const interaction = mockInteraction("ch-1");
+    await execute(interaction);
+    expect(interaction.editReply).toHaveBeenCalledWith(
+      expect.objectContaining({
+        content: expect.stringContaining("network down"),
+      }),
+    );
   });
 });

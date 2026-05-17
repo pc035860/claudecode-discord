@@ -12,7 +12,8 @@ export interface Project {
 export interface Session {
   id: string;
   channel_id: string;
-  session_id: string | null; // Claude Agent SDK session ID
+  session_id: string | null; // legacy Claude session ID (unused after Cursor SDK migration)
+  agent_id: string | null; // Cursor SDK agent ID
   status: SessionStatus;
   last_activity: string | null;
   created_at: string;

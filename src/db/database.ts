@@ -37,6 +37,14 @@ export function initDatabase(): void {
       console.error("[db] migration failed (output_style):", e);
     }
   }
+
+  try {
+    db.exec(`ALTER TABLE sessions ADD COLUMN agent_id TEXT`);
+  } catch (e) {
+    if (!(e instanceof Error && e.message.includes("duplicate column"))) {
+      console.error("[db] migration failed (agent_id):", e);
+    }
+  }
 }
 
 export function getDb(): Database.Database {
@@ -94,14 +102,14 @@ export function setOutputStyle(channelId: string, style: string): void {
 export function upsertSession(
   id: string,
   channelId: string,
-  sessionId: string | null,
+  agentId: string | null,
   status: SessionStatus,
 ): void {
   const stmt = db.prepare(`
-    INSERT OR REPLACE INTO sessions (id, channel_id, session_id, status, last_activity)
-    VALUES (?, ?, ?, ?, datetime('now'))
+    INSERT OR REPLACE INTO sessions (id, channel_id, session_id, agent_id, status, last_activity)
+    VALUES (?, ?, NULL, ?, ?, datetime('now'))
   `);
-  stmt.run(id, channelId, sessionId, status);
+  stmt.run(id, channelId, agentId, status);
 }
 
 export function getSession(channelId: string): Session | undefined {
