@@ -112,6 +112,19 @@ const result = await run.wait();
 
 Cursor SDK 的 `RunResult` 目前不提供 cost。`SHOW_COST=true` 時 footer 會顯示 `$0.0000`。`SHOW_COST=false` 完全隱藏。
 
+## Gotchas（改動前先讀）
+
+- **Stop race + placeholder pattern** (`session-manager.ts`)：`sendMessage()` 在 `await Agent.create()` / `await agent.send()` 前就把一個 `placeholder` 寫進 `this.sessions` map（`agent`/`run` 暫為 null）。`stopSession()` 設 `cancelRequested` flag，run 還沒備好就只翻 flag、sendMessage 每個 await 後檢查 flag 並 bail。`finally` 用 `this.sessions.get(channelId) === placeholder` identity-check 才 delete，避免 stop+新訊息把新 placeholder 刪掉。改動 ActiveSession 狀態時要保留這四點。
+- **`Agent.list({ cwd })` 不能 project-scope**：Cursor SDK 把 `cwd` 當 platform workspaceRef，不是 per-run `local.cwd`。`/sessions` 列的是 bot workspace 內所有 agents，跨專案 agents 也會出現。不要試圖用 `info.cwd === projectPath` filter（會把自己建的 agents 全濾掉）。
+- **`L()` 每次都讀 `.tray-lang`**：不可把 `L(en, kr)` 結果 cache 進 module-scope 常數（會凍結語言）。`TOOL_LABELS` 用 `() => L(...)` thunks 就是這原因。
+- **DB schema 演進**：用 `ALTER TABLE ... ADD COLUMN`（try-catch on duplicate column），不要砍 column（legacy `session_id`、`auto_approve`、`output_style` 都保留）。
+- **`run.wait()` 要分流 status**：`cancelled` 跳過 result embed（讓 `/stop` 的 offline 維持），`error` 顯示 ❌ + offline，其他才走 success path。漏判會把 cancelled 寫成 idle 蓋掉 stop。
+
+## Migration history
+
+從 Claude Agent SDK 遷移到 Cursor SDK 的完整 plan + 決策紀錄：
+`specs/plan/plan-2026-05-17_16-25-36_cursor-sdk-migration_fbb7d013-38f.md`
+
 ## 測試
 
 Vitest v2.0.0，測試檔案與原始碼共置（`*.test.ts`）。
