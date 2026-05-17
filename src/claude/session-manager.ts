@@ -18,11 +18,12 @@ import {
 } from "./output-formatter.js";
 
 interface ActiveSession {
-  agent: SDKAgent;
-  run: Run;
+  agent: SDKAgent | null;
+  run: Run | null;
   channelId: string;
   agentId: string | null;
   dbId: string;
+  cancelRequested: boolean;
 }
 
 export function formatToolDetail(name: string, input: Record<string, unknown>): string {
@@ -154,6 +155,20 @@ class SessionManager {
       }
     };
 
+    // Reserve the channel slot BEFORE awaiting Agent.create / agent.send so
+    // a second message arriving in the same channel doesn't bypass isActive()
+    // and start a parallel run. agent/run remain null until each await
+    // resolves; stopSession() uses cancelRequested to handle the race.
+    const placeholder: ActiveSession = {
+      agent: null,
+      run: null,
+      channelId,
+      agentId: resumeAgentId,
+      dbId,
+      cancelRequested: false,
+    };
+    this.sessions.set(channelId, placeholder);
+
     try {
       let agent: SDKAgent;
       if (resumeAgentId) {
@@ -180,19 +195,35 @@ class SessionManager {
         });
       }
 
+      placeholder.agent = agent;
+      placeholder.agentId = agent.agentId;
       upsertSession(dbId, channelId, agent.agentId, "online");
 
-      const run = await agent.send(prompt);
+      // If user pressed Stop during Agent.create/resume, bail before send.
+      if (placeholder.cancelRequested) {
+        await markDone();
+        updateSessionStatus(channelId, "offline");
+        return;
+      }
 
-      this.sessions.set(channelId, {
-        agent,
-        run,
-        channelId,
-        agentId: agent.agentId,
-        dbId,
-      });
+      const run = await agent.send(prompt);
+      placeholder.run = run;
+
+      // If user pressed Stop during agent.send, cancel immediately.
+      if (placeholder.cancelRequested) {
+        try {
+          await run.cancel();
+        } catch {
+          // ignore
+        }
+        await markDone();
+        updateSessionStatus(channelId, "offline");
+        return;
+      }
 
       for await (const event of run.stream()) {
+        if (placeholder.cancelRequested) break;
+
         if (event.type === "system" && event.subtype === "init" && event.agent_id) {
           const active = this.sessions.get(channelId);
           if (active) active.agentId = event.agent_id;
@@ -257,6 +288,20 @@ class SessionManager {
       const final = await run.wait();
 
       await markDone();
+
+      if (final.status === "cancelled") {
+        // /stop already updated the message + status to offline; skip the
+        // success embed and don't overwrite the offline marker.
+        return;
+      }
+
+      if (final.status === "error") {
+        const errText = final.result || L("Run ended with an error", "런이 오류로 종료되었습니다");
+        await channel.send(`❌ ${errText}`);
+        updateSessionStatus(channelId, "offline");
+        return;
+      }
+
       const resultText = final.result || L("Task completed", "작업 완료");
       const resultEmbed = createResultEmbed(
         resultText,
@@ -281,7 +326,11 @@ class SessionManager {
     } finally {
       clearInterval(heartbeatInterval);
       await threadReporter?.stop();
-      this.sessions.delete(channelId);
+      // Identity-check so a /stop + immediate new message doesn't have the
+      // old run's finally tear down the new run's placeholder.
+      if (this.sessions.get(channelId) === placeholder) {
+        this.sessions.delete(channelId);
+      }
 
       const queue = this.messageQueue.get(channelId);
       if (queue && queue.length > 0) {
@@ -304,10 +353,16 @@ class SessionManager {
     const session = this.sessions.get(channelId);
     if (!session) return false;
 
-    try {
-      await session.run.cancel();
-    } catch {
-      // already stopped
+    // Mark cancel for the startup race — sendMessage checks this flag after
+    // each await so a Stop pressed before run is wired up still aborts.
+    session.cancelRequested = true;
+
+    if (session.run) {
+      try {
+        await session.run.cancel();
+      } catch {
+        // already stopped
+      }
     }
 
     this.sessions.delete(channelId);

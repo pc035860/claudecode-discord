@@ -16,10 +16,14 @@ interface SessionInfo {
   lastModified: number;
 }
 
-async function listAgents(projectPath: string): Promise<SessionInfo[]> {
-  const result = await Agent.list({ runtime: "local", cwd: projectPath });
+async function listAgents(): Promise<SessionInfo[]> {
+  // Cursor SDK Agent.list() returns the platform workspaceRef as `cwd`, not
+  // the per-run `local.cwd` we passed at create time. There is no reliable
+  // way to project-scope from SDKAgentInfo today, so we list all non-archived
+  // local agents on this bot's host and let the user pick by name + recency.
+  const result = await Agent.list({ runtime: "local" });
   return result.items
-    .filter((a) => !a.archived)
+    .filter((a) => !a.archived && a.runtime === "local")
     .map((a) => ({
       agentId: a.agentId,
       name: a.name,
@@ -54,7 +58,7 @@ export async function execute(
 
   let sessions: SessionInfo[];
   try {
-    sessions = await listAgents(project.project_path);
+    sessions = await listAgents();
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     await interaction.editReply({
@@ -155,13 +159,13 @@ export async function execute(
         description: [
           `Project: \`${project.project_path}\``,
           L(
-            `Found **${sessions.length}** session(s)`,
-            `**${sessions.length}**개의 세션을 찾았습니다`,
+            `Found **${sessions.length}** local agent(s) in this bot workspace`,
+            `이 봇 워크스페이스에서 **${sessions.length}**개의 로컬 에이전트를 찾았습니다`,
           ),
           "",
           L(
-            "Select a session below to resume it.",
-            "아래에서 세션을 선택하여 재개하세요.",
+            "Cursor SDK does not expose per-project scoping; agents from other projects on this workspace may appear here. Pick by name / recency.",
+            "Cursor SDK는 프로젝트별 범위 지정을 지원하지 않으므로 이 워크스페이스의 다른 프로젝트 에이전트도 나타날 수 있습니다. 이름과 최근 시각으로 선택하세요.",
           ),
         ].join("\n"),
         color: 0x7c3aed,

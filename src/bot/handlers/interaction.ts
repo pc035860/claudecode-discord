@@ -210,7 +210,16 @@ export async function handleButtonInteraction(
     return;
   }
 
-  // Unknown action — silently no-op (handles orphan customIds from pre-migration buttons)
+  // Unknown action — likely an orphan customId from a pre-migration message.
+  // Ack so Discord doesn't show "interaction failed".
+  try {
+    await interaction.reply({
+      content: L("This button has expired.", "이 버튼은 만료되었습니다."),
+      ephemeral: true,
+    });
+  } catch {
+    // ignore — interaction may already be acknowledged
+  }
 }
 
 export async function handleSelectMenuInteraction(

@@ -88,12 +88,14 @@ describe("/sessions command", () => {
           name: "Active session",
           summary: "summary",
           lastModified: Date.now(),
+          runtime: "local",
         },
         {
           agentId: "agent-other",
           name: "Other session",
           summary: "summary",
           lastModified: Date.now() - 3600_000,
+          runtime: "local",
         },
       ],
     } as any);
@@ -121,6 +123,7 @@ describe("/sessions command", () => {
           name: "Active",
           summary: "",
           lastModified: Date.now(),
+          runtime: "local",
         },
         {
           agentId: "agent-2",
@@ -128,6 +131,7 @@ describe("/sessions command", () => {
           summary: "",
           lastModified: Date.now(),
           archived: true,
+          runtime: "local",
         },
       ],
     } as any);

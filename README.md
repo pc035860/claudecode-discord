@@ -172,19 +172,19 @@ Attach images, documents, or code files and Claude can read and analyze them.
 <summary><strong>Architecture</strong></summary>
 
 ```
-[Mobile Discord] ←→ [Discord Bot] ←→ [Session Manager] ←→ [Claude Agent SDK]
+[Mobile Discord] ←→ [Discord Bot] ←→ [Session Manager] ←→ [Cursor Agent SDK]
                           ↕
                      [SQLite DB]
 ```
 
 - Independent sessions per channel (project directory mapping)
-- Claude Agent SDK runs Claude Code as subprocess (shares existing auth)
-- Tool use approval via Discord buttons (auto-approve mode supported)
+- Cursor Agent SDK (`@cursor/sdk`) drives Cursor agents via `Agent.create` / `Agent.resume` + `run.stream()`
+- Tool use runs in full-allow mode (Cursor SDK has no per-tool callback)
 - Streaming responses edited every 1.5s into Discord messages
 - Heartbeat progress display every 15s until text output begins
 - Markdown code blocks preserved across message splits
 
-**Session States:** 🟢 working · 🟡 waiting for approval · ⚪ idle · 🔴 offline
+**Session States:** 🟢 working · ⚪ idle · 🔴 offline
 
 </details>
 
@@ -201,7 +201,7 @@ This bot:            Bot → [Connects to Discord] → Receives events         (
 
 ### Self-Hosted Architecture
 
-The bot runs entirely on your own PC/server. No external servers involved, and no data leaves your machine except through Discord and the Anthropic API (which uses your own Claude Code login session).
+The bot runs entirely on your own PC/server. No external servers involved, and no data leaves your machine except through Discord and the Cursor API (authenticated with your own `CURSOR_API_KEY`).
 
 ### Access Control
 
@@ -211,14 +211,14 @@ The bot runs entirely on your own PC/server. No external servers involved, and n
 
 ### Execution Protection
 
-- Tool use default: file modifications, command execution, etc. **require user approval each time** (Discord buttons)
+- Tool use runs in **full-allow mode** (Cursor Agent SDK has no per-call approval callback). For static tool gating, configure `.cursor/permissions.json` per project.
 - Path traversal (`..`) blocked
 - File attachments: executable files (.exe, .bat, etc.) blocked, 25MB size limit
 
 ### Precautions
 
-- The `.env` file contains your bot token — **never share it publicly.** If compromised, immediately Reset Token in Discord Developer Portal
-- `auto-approve` mode is convenient but may allow Claude to perform unintended actions — use only on trusted projects
+- The `.env` file contains your Discord bot token AND `CURSOR_API_KEY` — **never share it publicly.** If a token is compromised, rotate immediately (Discord Developer Portal / Cursor Dashboard).
+- Full-allow mode means Cursor can perform any action the agent decides — use only on trusted projects, ideally with `.cursor/permissions.json` restricting destructive tools.
 
 ## Quick Start by Platform
 
