@@ -25,13 +25,10 @@ npx tsc --noEmit      # 타입 체크만 수행 (빌드 출력 없음)
 
 ## 각 테스트 커버리지
 
-### output-formatter (29개)
+### output-formatter
 
-- **formatStreamChunk**: 1900자 절삭, 빈 문자열 처리
 - **splitMessage**: 줄바꿈 기준 분할, 긴 줄 강제 분할, 코드 블록 펜스 보존 (언어 지정 유/무), 여러 코드 블록 처리
-- **createToolApprovalEmbed**: 도구 타입별 필드 생성 (Edit, Bash, Write, 일반), 버튼 customId 형식, 콘텐츠 절삭
 - **createResultEmbed**: 비용 표시 토글, 소요시간 포맷, 설명 절삭
-- **createAskUserQuestionEmbed**: 단일 선택 (버튼), 다중 선택 (StringSelectMenu), 질문 인덱스, 행 분리 (행당 버튼 5개)
 - **createStopButton / createCompletedButton**: customId 형식, 비활성 상태
 
 ### guard (16개)

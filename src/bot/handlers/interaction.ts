@@ -5,7 +5,6 @@ import {
   ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
-  type RepliableInteraction,
 } from "discord.js";
 import { isAllowedUser } from "../../security/guard.js";
 import { sessionManager } from "../../claude/session-manager.js";
@@ -34,9 +33,7 @@ async function applyResume(
 }
 
 async function applyNewSession(
-  interaction: RepliableInteraction & {
-    update: ButtonInteraction["update"];
-  },
+  interaction: ButtonInteraction | StringSelectMenuInteraction,
   channelId: string,
 ): Promise<void> {
   upsertSession(randomUUID(), channelId, null, "idle");
@@ -261,7 +258,7 @@ export async function handleSelectMenuInteraction(
   const selectedAgentId = interaction.values[0];
 
   if (selectedAgentId === NEW_SESSION_SENTINEL) {
-    await applyNewSession(interaction as any, interaction.channelId);
+    await applyNewSession(interaction, interaction.channelId);
     return;
   }
 

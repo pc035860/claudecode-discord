@@ -26,17 +26,18 @@ interface ActiveSession {
   cancelRequested: boolean;
 }
 
-const TOOL_LABELS: Record<string, string> = {
-  read: L("Reading files", "파일 읽는 중"),
-  ls: L("Listing files", "파일 목록 보기"),
-  glob: L("Searching files", "파일 검색 중"),
-  grep: L("Searching code", "코드 검색 중"),
-  write: L("Writing file", "파일 작성 중"),
-  edit: L("Editing file", "파일 편집 중"),
-  shell: L("Running command", "명령어 실행 중"),
-  semSearch: L("Semantic search", "의미 검색 중"),
-  task: L("Spawning subagent", "서브에이전트 시작 중"),
-  mcp: L("Calling MCP tool", "MCP 도구 호출 중"),
+// Thunks so L() reads .tray-lang at call time (live language switch).
+const TOOL_LABELS: Record<string, () => string> = {
+  read: () => L("Reading files", "파일 읽는 중"),
+  ls: () => L("Listing files", "파일 목록 보기"),
+  glob: () => L("Searching files", "파일 검색 중"),
+  grep: () => L("Searching code", "코드 검색 중"),
+  write: () => L("Writing file", "파일 작성 중"),
+  edit: () => L("Editing file", "파일 편집 중"),
+  shell: () => L("Running command", "명령어 실행 중"),
+  semSearch: () => L("Semantic search", "의미 검색 중"),
+  task: () => L("Spawning subagent", "서브에이전트 시작 중"),
+  mcp: () => L("Calling MCP tool", "MCP 도구 호출 중"),
 };
 
 export function formatToolDetail(name: string, input: Record<string, unknown>): string {
@@ -271,7 +272,8 @@ class SessionManager {
             ? input.path
             : null;
           const fileSuffix = filePath ? ` \`${filePath.split(/[\\/]/).pop()}\`` : "";
-          lastActivity = `${TOOL_LABELS[event.name] ?? `Using ${event.name}`}${fileSuffix}`;
+          const label = TOOL_LABELS[event.name]?.() ?? `Using ${event.name}`;
+          lastActivity = `${label}${fileSuffix}`;
 
           if (!hasTextOutput) {
             const elapsed = Math.round((Date.now() - startTime) / 1000);

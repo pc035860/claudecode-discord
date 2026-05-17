@@ -25,13 +25,10 @@ npx tsc --noEmit      # Type check only (no build output)
 
 ## What Each Test Covers
 
-### output-formatter (29 tests)
+### output-formatter
 
-- **formatStreamChunk**: Truncation at 1900 chars, empty string handling
 - **splitMessage**: Newline-based splitting, forced split for long lines, code block fence preservation (with/without language specifier), multiple code blocks
-- **createToolApprovalEmbed**: Field generation per tool type (Edit, Bash, Write, generic), button customId format, content truncation
 - **createResultEmbed**: Cost display toggle, duration formatting, description truncation
-- **createAskUserQuestionEmbed**: Single-select (buttons), multi-select (StringSelectMenu), question indexing, row splitting (5 buttons per row)
 - **createStopButton / createCompletedButton**: CustomId format, disabled state
 
 ### guard (16 tests)
