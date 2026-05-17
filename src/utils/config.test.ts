@@ -46,7 +46,7 @@ describe("config", () => {
     const config = loadConfig();
     expect(config.RATE_LIMIT_PER_MINUTE).toBe(10);
     expect(config.SHOW_COST).toBe(true);
-    expect(config.CURSOR_MODEL).toBe("composer-2-fast");
+    expect(config.CURSOR_MODEL).toBe("composer-2");
     expect(config.CURSOR_MODEL_PARAMS).toBeUndefined();
     expect(config.THREAD_PROGRESS).toBe(false);
   });

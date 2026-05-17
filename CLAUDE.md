@@ -40,7 +40,7 @@ pm2 save
 ## 必要環境變數
 
 - `CURSOR_API_KEY` — Cursor SDK API key（從 Cursor Dashboard → Integrations 取得）
-- `CURSOR_MODEL`（選用，預設 `composer-2-fast`）
+- `CURSOR_MODEL`（選用，預設 `composer-2` — Cursor SDK 自動套用 `fast` parameter）
 - `CURSOR_MODEL_PARAMS`（選用，JSON array of `{id,value}`，例：`[{"id":"thinking","value":"high"}]`）
 
 ## Bot Commands

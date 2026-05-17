@@ -15,7 +15,7 @@ vi.mock("../utils/config.js", () => ({
   getConfig: vi.fn(() => ({
     SHOW_COST: true,
     CURSOR_API_KEY: "test-key",
-    CURSOR_MODEL: "composer-2-fast",
+    CURSOR_MODEL: "composer-2",
     CURSOR_MODEL_PARAMS: undefined,
     THREAD_PROGRESS: false,
   })),
