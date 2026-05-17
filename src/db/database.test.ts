@@ -18,7 +18,6 @@ import {
   unregisterProject,
   getProject,
   getAllProjects,
-  setAutoApprove,
   upsertSession,
   getSession,
   updateSessionStatus,
@@ -39,7 +38,6 @@ describe("database", () => {
       expect(project).toBeDefined();
       expect(project!.project_path).toBe("/path/to/project");
       expect(project!.guild_id).toBe("guild1");
-      expect(project!.auto_approve).toBe(0);
     });
 
     it("registerProject with same channelId replaces existing", () => {
@@ -70,16 +68,6 @@ describe("database", () => {
       expect(getSession("ch1")).toBeUndefined();
     });
 
-    it("setAutoApprove toggles auto_approve flag", () => {
-      registerProject("ch1", "/p1", "guild1");
-      expect(getProject("ch1")!.auto_approve).toBe(0);
-
-      setAutoApprove("ch1", true);
-      expect(getProject("ch1")!.auto_approve).toBe(1);
-
-      setAutoApprove("ch1", false);
-      expect(getProject("ch1")!.auto_approve).toBe(0);
-    });
   });
 
   // ─── Session CRUD ───
@@ -114,8 +102,8 @@ describe("database", () => {
 
     it("updateSessionStatus changes status", () => {
       upsertSession("s1", "ch1", null, "online");
-      updateSessionStatus("ch1", "waiting");
-      expect(getSession("ch1")!.status).toBe("waiting");
+      updateSessionStatus("ch1", "idle");
+      expect(getSession("ch1")!.status).toBe("idle");
     });
 
     it("getAllSessions joins with projects", () => {

@@ -81,23 +81,6 @@ export function getAllProjects(guildId: string): Project[] {
     .all(guildId) as Project[];
 }
 
-export function setAutoApprove(
-  channelId: string,
-  autoApprove: boolean,
-): void {
-  db.prepare("UPDATE projects SET auto_approve = ? WHERE channel_id = ?").run(
-    autoApprove ? 1 : 0,
-    channelId,
-  );
-}
-
-export function setOutputStyle(channelId: string, style: string): void {
-  db.prepare("UPDATE projects SET output_style = ? WHERE channel_id = ?").run(
-    style,
-    channelId,
-  );
-}
-
 // Session queries
 export function upsertSession(
   id: string,

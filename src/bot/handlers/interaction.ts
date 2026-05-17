@@ -1,14 +1,59 @@
+import { randomUUID } from "node:crypto";
 import {
   ButtonInteraction,
   StringSelectMenuInteraction,
   ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
+  type RepliableInteraction,
 } from "discord.js";
 import { isAllowedUser } from "../../security/guard.js";
 import { sessionManager } from "../../claude/session-manager.js";
 import { upsertSession } from "../../db/database.js";
+import { NEW_SESSION_SENTINEL } from "../commands/sessions.js";
 import { L } from "../../utils/i18n.js";
+
+async function applyResume(
+  interaction: ButtonInteraction | StringSelectMenuInteraction,
+  agentId: string,
+): Promise<void> {
+  upsertSession(randomUUID(), interaction.channelId, agentId, "idle");
+  await interaction.update({
+    embeds: [
+      {
+        title: L("Session Resumed", "세션 재개됨"),
+        description: L(
+          `Session: \`${agentId.slice(0, 12)}...\`\n\nNext message you send will resume this conversation.`,
+          `세션: \`${agentId.slice(0, 12)}...\`\n\n다음 메시지부터 이 대화가 재개됩니다.`,
+        ),
+        color: 0x00ff00,
+      },
+    ],
+    components: [],
+  });
+}
+
+async function applyNewSession(
+  interaction: RepliableInteraction & {
+    update: ButtonInteraction["update"];
+  },
+  channelId: string,
+): Promise<void> {
+  upsertSession(randomUUID(), channelId, null, "idle");
+  await interaction.update({
+    embeds: [
+      {
+        title: L("✨ New Session", "✨ 새 세션"),
+        description: L(
+          "New session is ready.\nA new conversation will start from your next message.",
+          "새 세션이 준비되었습니다.\n다음 메시지부터 새로운 대화가 시작됩니다.",
+        ),
+        color: 0x00ff00,
+      },
+    ],
+    components: [],
+  });
+}
 
 export async function handleButtonInteraction(
   interaction: ButtonInteraction,
@@ -34,7 +79,6 @@ export async function handleButtonInteraction(
     return;
   }
 
-  // Handle stop button
   if (action === "stop") {
     const channelId = requestId;
     const stopped = await sessionManager.stopSession(channelId);
@@ -51,7 +95,6 @@ export async function handleButtonInteraction(
     return;
   }
 
-  // Handle queue confirmation
   if (action === "queue-yes") {
     const channelId = requestId;
     const confirmed = sessionManager.confirmQueue(channelId);
@@ -82,26 +125,8 @@ export async function handleButtonInteraction(
     return;
   }
 
-  // Handle session resume button — agentId is in requestId
   if (action === "session-resume") {
-    const agentId = requestId;
-    const channelId = interaction.channelId;
-    const { randomUUID } = await import("node:crypto");
-    upsertSession(randomUUID(), channelId, agentId, "idle");
-
-    await interaction.update({
-      embeds: [
-        {
-          title: L("Session Resumed", "세션 재개됨"),
-          description: L(
-            `Session: \`${agentId.slice(0, 12)}...\`\n\nNext message you send will resume this conversation.`,
-            `세션: \`${agentId.slice(0, 12)}...\`\n\n다음 메시지부터 이 대화가 재개됩니다.`,
-          ),
-          color: 0x00ff00,
-        },
-      ],
-      components: [],
-    });
+    await applyResume(interaction, requestId);
     return;
   }
 
@@ -114,7 +139,6 @@ export async function handleButtonInteraction(
     return;
   }
 
-  // Handle queue clear button
   if (action === "queue-clear") {
     const channelId = requestId;
     const cleared = sessionManager.clearQueue(channelId);
@@ -134,7 +158,6 @@ export async function handleButtonInteraction(
     return;
   }
 
-  // Handle queue remove individual item button
   if (action === "queue-remove") {
     const lastColon = requestId.lastIndexOf(":");
     const channelId = requestId.slice(0, lastColon);
@@ -236,44 +259,12 @@ export async function handleSelectMenuInteraction(
   if (interaction.customId !== "session-select") return;
 
   const selectedAgentId = interaction.values[0];
-  const channelId = interaction.channelId;
 
-  // Handle "New Session" option
-  if (selectedAgentId === "__new_session__") {
-    const { randomUUID } = await import("node:crypto");
-    upsertSession(randomUUID(), channelId, null, "idle");
-
-    await interaction.update({
-      embeds: [
-        {
-          title: L("✨ New Session", "✨ 새 세션"),
-          description: L(
-            "New session is ready.\nA new conversation will start from your next message.",
-            "새 세션이 준비되었습니다.\n다음 메시지부터 새로운 대화가 시작됩니다.",
-          ),
-          color: 0x00ff00,
-        },
-      ],
-      components: [],
-    });
+  if (selectedAgentId === NEW_SESSION_SENTINEL) {
+    await applyNewSession(interaction as any, interaction.channelId);
     return;
   }
 
-  // Direct resume — no preview (Cursor SDK has no JSONL transcript access)
-  const { randomUUID } = await import("node:crypto");
-  upsertSession(randomUUID(), channelId, selectedAgentId, "idle");
-
-  await interaction.update({
-    embeds: [
-      {
-        title: L("Session Resumed", "세션 재개됨"),
-        description: L(
-          `Session: \`${selectedAgentId.slice(0, 12)}...\`\n\nNext message you send will resume this conversation.`,
-          `세션: \`${selectedAgentId.slice(0, 12)}...\`\n\n다음 메시지부터 이 대화가 재개됩니다.`,
-        ),
-        color: 0x00ff00,
-      },
-    ],
-    components: [],
-  });
+  // Direct resume — no preview (Cursor SDK has no JSONL transcript access).
+  await applyResume(interaction, selectedAgentId);
 }

@@ -26,6 +26,19 @@ interface ActiveSession {
   cancelRequested: boolean;
 }
 
+const TOOL_LABELS: Record<string, string> = {
+  read: L("Reading files", "파일 읽는 중"),
+  ls: L("Listing files", "파일 목록 보기"),
+  glob: L("Searching files", "파일 검색 중"),
+  grep: L("Searching code", "코드 검색 중"),
+  write: L("Writing file", "파일 작성 중"),
+  edit: L("Editing file", "파일 편집 중"),
+  shell: L("Running command", "명령어 실행 중"),
+  semSearch: L("Semantic search", "의미 검색 중"),
+  task: L("Spawning subagent", "서브에이전트 시작 중"),
+  mcp: L("Calling MCP tool", "MCP 도구 호출 중"),
+};
+
 export function formatToolDetail(name: string, input: Record<string, unknown>): string {
   // Cursor tools: shell, edit, read, write, glob, grep, ls, semSearch, task, mcp
   if (name === "task" && typeof input.description === "string") {
@@ -126,20 +139,19 @@ class SessionManager {
     let hasTextOutput = false;
     let sessionDone = false;
 
+    let lastHeartbeatContent = "";
     const heartbeatInterval = setInterval(async () => {
       if (hasTextOutput || sessionDone) return;
       const elapsed = Math.round((Date.now() - startTime) / 1000);
       const mins = Math.floor(elapsed / 60);
       const secs = elapsed % 60;
       const timeStr = mins > 0 ? `${mins}m ${secs}s` : `${secs}s`;
+      const content = `⏳ ${lastActivity} (${timeStr})`;
+      // Guard against no-op edits while waiting on Cursor — Discord rate limits add up.
+      if (content === lastHeartbeatContent) return;
+      lastHeartbeatContent = content;
       try {
-        await currentMessage.edit({
-          content: `⏳ ${lastActivity} (${timeStr})`,
-          components: [stopRow],
-        });
-        if (sessionDone) {
-          await currentMessage.edit({ components: [createCompletedButton()] });
-        }
+        await currentMessage.edit({ content, components: [stopRow] });
       } catch (e) {
         console.warn(`[heartbeat] Failed to edit message for ${channelId}:`, e instanceof Error ? e.message : e);
       }
@@ -224,9 +236,15 @@ class SessionManager {
       for await (const event of run.stream()) {
         if (placeholder.cancelRequested) break;
 
-        if (event.type === "system" && event.subtype === "init" && event.agent_id) {
-          const active = this.sessions.get(channelId);
-          if (active) active.agentId = event.agent_id;
+        if (
+          event.type === "system" &&
+          event.subtype === "init" &&
+          event.agent_id &&
+          event.agent_id !== placeholder.agentId
+        ) {
+          // Defensive: if init reports a different agent_id than Agent.create
+          // gave us, reconcile. In normal flow these match and we skip writes.
+          placeholder.agentId = event.agent_id;
           upsertSession(dbId, channelId, event.agent_id, "online");
         }
 
@@ -247,25 +265,13 @@ class SessionManager {
           const detail = formatToolDetail(event.name, input);
           threadReporter?.pushTool(event.name, detail);
 
-          const toolLabels: Record<string, string> = {
-            read: L("Reading files", "파일 읽는 중"),
-            ls: L("Listing files", "파일 목록 보기"),
-            glob: L("Searching files", "파일 검색 중"),
-            grep: L("Searching code", "코드 검색 중"),
-            write: L("Writing file", "파일 작성 중"),
-            edit: L("Editing file", "파일 편집 중"),
-            shell: L("Running command", "명령어 실행 중"),
-            semSearch: L("Semantic search", "의미 검색 중"),
-            task: L("Spawning subagent", "서브에이전트 시작 중"),
-            mcp: L("Calling MCP tool", "MCP 도구 호출 중"),
-          };
           const filePath = typeof input.file_path === "string"
             ? input.file_path
             : typeof input.path === "string"
             ? input.path
             : null;
           const fileSuffix = filePath ? ` \`${filePath.split(/[\\/]/).pop()}\`` : "";
-          lastActivity = `${toolLabels[event.name] ?? `Using ${event.name}`}${fileSuffix}`;
+          lastActivity = `${TOOL_LABELS[event.name] ?? `Using ${event.name}`}${fileSuffix}`;
 
           if (!hasTextOutput) {
             const elapsed = Math.round((Date.now() - startTime) / 1000);

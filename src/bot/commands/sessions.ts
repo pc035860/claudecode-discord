@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import {
   ChatInputCommandInteraction,
   SlashCommandBuilder,
@@ -6,8 +7,10 @@ import {
 } from "discord.js";
 import { Agent } from "@cursor/sdk";
 import { getProject, getSession, upsertSession } from "../../db/database.js";
-import { getConfig } from "../../utils/config.js";
 import { L } from "../../utils/i18n.js";
+
+export const NEW_SESSION_SENTINEL = "__new_session__";
+const SESSION_LIST_LIMIT = 50;
 
 interface SessionInfo {
   agentId: string;
@@ -20,8 +23,11 @@ async function listAgents(): Promise<SessionInfo[]> {
   // Cursor SDK Agent.list() returns the platform workspaceRef as `cwd`, not
   // the per-run `local.cwd` we passed at create time. There is no reliable
   // way to project-scope from SDKAgentInfo today, so we list all non-archived
-  // local agents on this bot's host and let the user pick by name + recency.
-  const result = await Agent.list({ runtime: "local" });
+  // local agents in this bot workspace and let the user pick by name + recency.
+  const result = await Agent.list({
+    runtime: "local",
+    limit: SESSION_LIST_LIMIT,
+  });
   return result.items
     .filter((a) => !a.archived && a.runtime === "local")
     .map((a) => ({
@@ -31,6 +37,21 @@ async function listAgents(): Promise<SessionInfo[]> {
       lastModified: a.lastModified,
     }))
     .sort((a, b) => b.lastModified - a.lastModified);
+}
+
+function formatRelativeTime(ts: number): string {
+  const diffMs = Date.now() - ts;
+  const min = Math.floor(diffMs / 60000);
+  if (min < 1) return L("just now", "방금");
+  if (min < 60) return L(`${min}m ago`, `${min}분 전`);
+  const hr = Math.floor(diffMs / 3600000);
+  if (hr < 24) return L(`${hr}h ago`, `${hr}시간 전`);
+  const day = Math.floor(diffMs / 86400000);
+  if (day < 7) return L(`${day}d ago`, `${day}일 전`);
+  return new Date(ts).toLocaleDateString(L("en-US", "ko-KR"), {
+    month: "short",
+    day: "numeric",
+  });
 }
 
 export const data = new SlashCommandBuilder()
@@ -53,9 +74,6 @@ export async function execute(
     return;
   }
 
-  // Ensure Cursor SDK has API key available before listing
-  getConfig();
-
   let sessions: SessionInfo[];
   try {
     sessions = await listAgents();
@@ -71,7 +89,6 @@ export async function execute(
   }
 
   if (sessions.length === 0) {
-    const { randomUUID } = await import("node:crypto");
     upsertSession(randomUUID(), channelId, null, "idle");
     await interaction.editReply({
       embeds: [
@@ -103,29 +120,12 @@ export async function execute(
         "Start a new conversation without an existing session",
         "기존 세션 없이 새로운 대화를 시작합니다",
       ),
-      value: "__new_session__",
+      value: NEW_SESSION_SENTINEL,
     },
   ];
 
   const sessionOptions = sessions.slice(0, 24).map((s, i) => {
-    const diffMs = Date.now() - s.lastModified;
-    const diffMin = Math.floor(diffMs / 60000);
-    const diffHr = Math.floor(diffMs / 3600000);
-    const diffDay = Math.floor(diffMs / 86400000);
-    const timeStr =
-      diffMin < 1
-        ? L("just now", "방금")
-        : diffMin < 60
-          ? L(`${diffMin}m ago`, `${diffMin}분 전`)
-          : diffHr < 24
-            ? L(`${diffHr}h ago`, `${diffHr}시간 전`)
-            : diffDay < 7
-              ? L(`${diffDay}d ago`, `${diffDay}일 전`)
-              : new Date(s.lastModified).toLocaleDateString(
-                  L("en-US", "ko-KR"),
-                  { month: "short", day: "numeric" },
-                );
-
+    const timeStr = formatRelativeTime(s.lastModified);
     const isActive = s.agentId === activeAgentId;
     const displayName = s.name || s.summary || `Session ${i + 1}`;
     const label = isActive

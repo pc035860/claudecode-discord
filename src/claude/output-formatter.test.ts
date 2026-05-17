@@ -6,33 +6,11 @@ vi.mock("../utils/i18n.js", () => ({
 }));
 
 import {
-  formatStreamChunk,
   splitMessage,
   createResultEmbed,
   createStopButton,
   createCompletedButton,
 } from "./output-formatter.js";
-
-describe("formatStreamChunk", () => {
-  it("returns text unchanged when under 1900 characters", () => {
-    expect(formatStreamChunk("hello")).toBe("hello");
-  });
-
-  it("returns text unchanged at exactly 1900 characters", () => {
-    const text = "a".repeat(1900);
-    expect(formatStreamChunk(text)).toBe(text);
-  });
-
-  it("truncates text over 1900 characters with ellipsis", () => {
-    const text = "a".repeat(2000);
-    const result = formatStreamChunk(text);
-    expect(result).toBe("a".repeat(1900) + "\n... (truncated)");
-  });
-
-  it("handles empty string", () => {
-    expect(formatStreamChunk("")).toBe("");
-  });
-});
 
 describe("splitMessage", () => {
   it("returns single chunk for short messages", () => {

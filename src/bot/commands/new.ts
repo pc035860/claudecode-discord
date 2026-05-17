@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import {
   ChatInputCommandInteraction,
   SlashCommandBuilder,
@@ -25,8 +26,6 @@ export async function execute(
     return;
   }
 
-  // Create a new session by setting session_id to null
-  const { randomUUID } = await import("node:crypto");
   upsertSession(randomUUID(), channelId, null, "idle");
 
   await interaction.editReply({

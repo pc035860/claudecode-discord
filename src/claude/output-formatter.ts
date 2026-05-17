@@ -8,11 +8,6 @@ import { L } from "../utils/i18n.js";
 
 export const MAX_DISCORD_LENGTH = 1900; // leave room for formatting
 
-export function formatStreamChunk(text: string): string {
-  if (text.length <= MAX_DISCORD_LENGTH) return text;
-  return text.slice(0, MAX_DISCORD_LENGTH) + "\n" + L("... (truncated)", "... (잘림)");
-}
-
 export function splitMessage(text: string): string[] {
   const chunks: string[] = [];
   let remaining = text;

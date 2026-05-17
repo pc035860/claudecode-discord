@@ -52,8 +52,6 @@ describe("/sessions command", () => {
       channel_id: "ch-1",
       project_path: "/proj",
       guild_id: "g-1",
-      auto_approve: 0,
-      output_style: "seed",
       created_at: "",
     });
     vi.mocked(Agent.list).mockResolvedValue({ items: [] });
@@ -68,8 +66,6 @@ describe("/sessions command", () => {
       channel_id: "ch-1",
       project_path: "/proj",
       guild_id: "g-1",
-      auto_approve: 0,
-      output_style: "seed",
       created_at: "",
     });
     vi.mocked(getSession).mockReturnValue({
@@ -111,8 +107,6 @@ describe("/sessions command", () => {
       channel_id: "ch-1",
       project_path: "/proj",
       guild_id: "g-1",
-      auto_approve: 0,
-      output_style: "seed",
       created_at: "",
     });
     vi.mocked(getSession).mockReturnValue(undefined);
@@ -146,8 +140,6 @@ describe("/sessions command", () => {
       channel_id: "ch-1",
       project_path: "/proj",
       guild_id: "g-1",
-      auto_approve: 0,
-      output_style: "seed",
       created_at: "",
     });
     vi.mocked(Agent.list).mockRejectedValue(new Error("network down"));
