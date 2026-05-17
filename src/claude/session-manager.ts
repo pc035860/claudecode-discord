@@ -1,4 +1,9 @@
-import { Agent, type Run, type SDKAgent } from "@cursor/sdk";
+import {
+  Agent,
+  type LocalAgentOptions,
+  type Run,
+  type SDKAgent,
+} from "@cursor/sdk";
 import { randomUUID } from "node:crypto";
 import type { TextChannel } from "discord.js";
 import {
@@ -159,28 +164,31 @@ class SessionManager {
     this.sessions.set(channelId, placeholder);
 
     try {
+      // Cursor SDK local agents require an explicit model on every call —
+      // resume() does not inherit the model from the persisted agent record.
+      const modelSelection = {
+        id: config.CURSOR_MODEL,
+        ...(config.CURSOR_MODEL_PARAMS
+          ? { params: config.CURSOR_MODEL_PARAMS }
+          : {}),
+      };
+      const localOptions: LocalAgentOptions = {
+        cwd: project.project_path,
+        settingSources: ["all"],
+      };
+
       let agent: SDKAgent;
       if (resumeAgentId) {
         agent = await Agent.resume(resumeAgentId, {
           apiKey: config.CURSOR_API_KEY,
-          local: {
-            cwd: project.project_path,
-            settingSources: ["all"],
-          },
+          model: modelSelection,
+          local: localOptions,
         });
       } else {
         agent = await Agent.create({
           apiKey: config.CURSOR_API_KEY,
-          model: {
-            id: config.CURSOR_MODEL,
-            ...(config.CURSOR_MODEL_PARAMS
-              ? { params: config.CURSOR_MODEL_PARAMS }
-              : {}),
-          },
-          local: {
-            cwd: project.project_path,
-            settingSources: ["all"],
-          },
+          model: modelSelection,
+          local: localOptions,
         });
       }
 
