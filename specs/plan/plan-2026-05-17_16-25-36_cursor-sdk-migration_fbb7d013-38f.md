@@ -240,6 +240,31 @@ Critical path: 1 → 2 → 7 → 10. Steps 3, 4, 5, 8, 9 can run in parallel aft
 11. **Smoke 9 — legacy DB row**: seed a row with `session_id` set + `agent_id = NULL`, send a message. Confirm code falls through to `Agent.create()` (no crash on null agent_id).
 12. **Memory closure**: after verification, update `graph-memory` with new SDK integration entity + key limitations (full-allow mode, no persona, agent_id schema).
 
+## Completion Status
+
+Implementation landed on branch `migrate-cursor-agent-sdk` over four commits:
+
+| Commit    | Subject                                            |
+| --------- | -------------------------------------------------- |
+| `d5438b5` | feat(sdk)!: migrate from Claude Agent SDK to Cursor Agent SDK |
+| `d23fb69` | fix(sdk): address Codex review findings on Cursor migration |
+| `2cb6657` | refactor(sdk): simplify post-migration code        |
+| `fe938f9` | chore: address post-simplify Codex suggestions     |
+
+Verification: `npx tsc --noEmit` clean, `npm test` 125 passed, `npm run build` clean. Manual smoke tests (Smoke 1–9 in the Verification section) are still pending — run after `pm2 delete claudecode-discord && pm2 start dist/index.js --name claudecode-discord && pm2 save`.
+
+Deviations from the original plan:
+- `Agent.list({ cwd: projectPath })` cannot project-scope (Cursor SDK uses `cwd` as the platform workspaceRef, not per-run `local.cwd`). `/sessions` now lists ALL local agents in the bot workspace and warns the user. Documented as a known limitation.
+- Cursor SDK `RunResult` has no `totalCostUsd`. `SHOW_COST=true` always shows `$0.0000`. Acceptable per plan note R7.
+- Dead-code cleanup in commit `2cb6657` removed `setOutputStyle`, `setAutoApprove`, `formatStreamChunk`, `output_style` / `auto_approve` `Project` type fields, and narrowed `SessionStatus` to `"online" | "offline" | "idle"`. DB columns left in place (no migration cleanup, per locked decision 9).
+- README architecture and security sections rewritten in `d23fb69` to remove stale "Claude Agent SDK" / per-tool approval language. Brand name "Claude Code Discord Controller" intentionally kept (out of MVP scope).
+- Stop-before-run race + finally identity-check + run.wait() status branching are documented in `d23fb69` commit body and `src/claude/session-manager.ts` comments.
+
+Pending follow-up (not blocking ship):
+- Integration smoke against a live Cursor SDK environment (Smoke 1–9 in Verification).
+- State-machine test for `/stop` + immediate new message (mocks for Cursor SDK `run.stream()` are non-trivial).
+- Rebrand pass if/when "Claude Code Discord Controller" name is retired.
+
 ## Critical files
 
 - `/Users/pc035860/code/claudecode-discord/src/claude/session-manager.ts`
