@@ -14,7 +14,6 @@ import {
   createResultEmbed,
   createStopButton,
   createCompletedButton,
-  splitMessage,
 } from "./output-formatter.js";
 
 interface ActiveSession {
@@ -94,38 +93,11 @@ class SessionManager {
 
     upsertSession(dbId, channelId, resumeAgentId, "online");
 
-    let responseBuffer = "";
-    let lastEditTime = 0;
     const stopRow = createStopButton(channelId);
-    let currentMessage = await channel.send({
+    const currentMessage = await channel.send({
       content: L("⏳ Thinking...", "⏳ 생각 중..."),
       components: [stopRow],
     });
-    const EDIT_INTERVAL = 1500;
-
-    async function flushBuffer(force = false): Promise<void> {
-      if (responseBuffer.length === 0) return;
-      if (!force) {
-        const now = Date.now();
-        if (now - lastEditTime < EDIT_INTERVAL) return;
-      }
-
-      const chunks = splitMessage(responseBuffer);
-      try {
-        await currentMessage.edit({ content: chunks[0] || "...", components: [] });
-        for (let i = 1; i < chunks.length; i++) {
-          currentMessage = await channel.send(chunks[i]);
-        }
-        responseBuffer = "";
-      } catch (e) {
-        console.warn(`[flush] Failed to edit message for ${channelId}, sending new:`, e instanceof Error ? e.message : e);
-        for (const chunk of chunks) {
-          currentMessage = await channel.send(chunk);
-        }
-        responseBuffer = "";
-      }
-      lastEditTime = Date.now();
-    }
 
     const config = getConfig();
     let threadReporter: ThreadReporter | null = null;
@@ -137,25 +109,29 @@ class SessionManager {
     const startTime = Date.now();
     let lastActivity = L("Thinking...", "생각 중...");
     let toolUseCount = 0;
-    let hasTextOutput = false;
     let sessionDone = false;
 
-    let lastHeartbeatContent = "";
-    const heartbeatInterval = setInterval(async () => {
-      if (hasTextOutput || sessionDone) return;
+    let lastStatusContent = "";
+    const renderStatus = async (): Promise<void> => {
+      if (sessionDone) return;
       const elapsed = Math.round((Date.now() - startTime) / 1000);
       const mins = Math.floor(elapsed / 60);
       const secs = elapsed % 60;
       const timeStr = mins > 0 ? `${mins}m ${secs}s` : `${secs}s`;
-      const content = `⏳ ${lastActivity} (${timeStr})`;
-      // Guard against no-op edits while waiting on Cursor — Discord rate limits add up.
-      if (content === lastHeartbeatContent) return;
-      lastHeartbeatContent = content;
+      const toolSuffix = toolUseCount > 0 ? ` [${toolUseCount} tools used]` : "";
+      const content = `⏳ ${lastActivity} (${timeStr})${toolSuffix}`;
+      if (content === lastStatusContent) return;
+      lastStatusContent = content;
       try {
         await currentMessage.edit({ content, components: [stopRow] });
       } catch (e) {
-        console.warn(`[heartbeat] Failed to edit message for ${channelId}:`, e instanceof Error ? e.message : e);
+        console.warn(`[status] Failed to edit message for ${channelId}:`, e instanceof Error ? e.message : e);
       }
+    };
+
+    // Heartbeat keeps the elapsed-time fresh while waiting between tool events.
+    const heartbeatInterval = setInterval(() => {
+      renderStatus().catch(() => {});
     }, 15_000);
 
     const markDone = async () => {
@@ -249,15 +225,16 @@ class SessionManager {
           upsertSession(dbId, channelId, event.agent_id, "online");
         }
 
+        // Assistant text events stream incrementally — keep them in the
+        // thread (progress view) only. The final embed will carry the full
+        // text once via run.wait().result, so we don't edit it into the
+        // main Discord message piece-by-piece.
         if (event.type === "assistant" && event.message?.content) {
           for (const block of event.message.content) {
             if (block.type === "text" && block.text) {
-              responseBuffer += block.text;
-              hasTextOutput = true;
               threadReporter?.pushText(block.text);
             }
           }
-          await flushBuffer();
         }
 
         if (event.type === "tool_call" && event.status === "running") {
@@ -274,25 +251,10 @@ class SessionManager {
           const fileSuffix = filePath ? ` \`${filePath.split(/[\\/]/).pop()}\`` : "";
           const label = TOOL_LABELS[event.name]?.() ?? `Using ${event.name}`;
           lastActivity = `${label}${fileSuffix}`;
-
-          if (!hasTextOutput) {
-            const elapsed = Math.round((Date.now() - startTime) / 1000);
-            const timeStr = elapsed > 60
-              ? `${Math.floor(elapsed / 60)}m ${elapsed % 60}s`
-              : `${elapsed}s`;
-            try {
-              await currentMessage.edit({
-                content: `⏳ ${lastActivity} (${timeStr}) [${toolUseCount} tools used]`,
-                components: [stopRow],
-              });
-            } catch (e) {
-              console.warn(`[tool-status] Failed to edit message for ${channelId}:`, e instanceof Error ? e.message : e);
-            }
-          }
+          await renderStatus();
         }
       }
 
-      await flushBuffer(true);
       const final = await run.wait();
 
       await markDone();

@@ -38,16 +38,23 @@ export async function execute(
       .setTimestamp();
 
     for (const m of models.slice(0, 25)) {
-      const aliases = m.aliases?.length ? `\n${L("Aliases", "별칭")}: ${m.aliases.map((a) => `\`${a}\``).join(", ")}` : "";
-      const variants = m.variants?.length
-        ? `\n${L("Variants", "변형")}: ${m.variants
-            .map((v) => v.displayName)
-            .join(", ")}`
+      const aliases = m.aliases?.length
+        ? `\n${L("Aliases", "별칭")}: ${m.aliases.map((a) => `\`${a}\``).join(", ")}`
         : "";
-      const value = [m.description ?? "", aliases, variants]
-        .filter(Boolean)
-        .join("")
-        .slice(0, 1024) || "​";
+      const parameters = m.parameters?.length
+        ? "\n" +
+          m.parameters
+            .map(
+              (p) =>
+                `\`${p.id}\`: ${p.values.map((v) => v.value).join(" / ")}`,
+            )
+            .join("\n")
+        : "";
+      const value =
+        [m.description ?? "", aliases, parameters]
+          .filter(Boolean)
+          .join("")
+          .slice(0, 1024) || "​";
       embed.addFields({
         name: `\`${m.id}\` — ${m.displayName}`.slice(0, 256),
         value,
