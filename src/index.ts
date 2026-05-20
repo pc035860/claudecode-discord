@@ -1,6 +1,7 @@
 import "dotenv/config";
 import fs from "node:fs";
 import path from "node:path";
+import { ConnectError } from "@connectrpc/connect";
 import { loadConfig } from "./utils/config.js";
 import { initDatabase } from "./db/database.js";
 import { startBot } from "./bot/client.js";
@@ -48,7 +49,21 @@ async function main() {
 
   // Global error handlers — prevent silent hangs from unhandled errors
   process.on("unhandledRejection", (reason) => {
-    console.error("Unhandled promise rejection:", reason);
+    const isConnectErr =
+      reason instanceof ConnectError ||
+      (reason instanceof Error && reason.name === "ConnectError");
+    if (isConnectErr) {
+      const code = (reason as { code?: unknown }).code;
+      console.error(
+        "[unhandledRejection] ConnectError (likely Cursor SDK internal stream reject):",
+        { code, message: (reason as Error).message },
+      );
+      console.error(
+        `[unhandledRejection] BOT MAY BE IN A BAD STATE. If users report repeated [${String(code)}] errors, please restart the bot process.`,
+      );
+    } else {
+      console.error("[unhandledRejection]", reason);
+    }
   });
   process.on("uncaughtException", (error) => {
     console.error("Uncaught exception:", error);

@@ -126,6 +126,8 @@ Cursor SDK 的 `RunResult` 目前不提供 cost。`SHOW_COST=true` 時 footer �
 - **`run.wait()` 要分流 status**：`cancelled` 跳過 result embed（讓 `/stop` 的 offline 維持），`error` 顯示 ❌ + offline，其他才走 success path。漏判會把 cancelled 寫成 idle 蓋掉 stop。
 - **tsup 打包成單檔 → module 相對路徑深度不同**：`src/claude/foo.ts` 在 dev 跑（tsx）時 `import.meta.url` 指 `src/claude/`，但 prod 全部 bundle 到 `dist/index.js`（flat）。要讀 repo 相對檔（`rules/BOT.md`、`.tray-lang` …）必須 try 多個候選深度（`../../X` 給 tsx，`../X` 給 dist），別只寫一個就 ship。可參考 `BOT_RULES` IIFE（`session-manager.ts`）。
 - **`realpathSync` 結果要往下游傳**：用 realpath 解析 + allowlist 檢查通過後，後續 `fs.existsSync` / `new AttachmentBuilder(...)` 都要用 **resolved 路徑**而不是原始輸入，否則 symlink 在驗證和讀取之間被換掉就會繞過 allowlist。`resolveIfAllowed` 回傳 `string | null` 就是強制這個 contract（`output-formatter.ts`）。
+- **Cursor SDK long-lived client 壞 state**：bot process 跑久（觀察到 ~2 天）後，`@cursor/sdk` 內部的 `@connectrpc/connect` client 會累積壞 state，所有 `agent.send()` / `run.stream()` 都拋 `ConnectError: [unauthenticated]`（gRPC code 16），fresh process 跑 spike 完全正常。SDK 沒公開 API 重建 internal client → 只能 `pm2 restart claudecode-discord`。`unhandledRejection` handler (`src/index.ts`) 會偵測 ConnectError 並 log admin 提示。`parseApiError` 對 ConnectError 走獨立 branch；catch block 把訊息送 Discord 前**先檢查開頭是不是 `❌/⚠️`** 避免 double emoji。
+- **`@connectrpc/connect` 直接 import**：原本只是 `@cursor/sdk` 的 transitive dep，已升 direct（為了 `ConnectError instanceof` 判斷 + `Code` enum）。偵測 ConnectError 用 `isConnectError()` helper（`session-manager.ts`，已 export），它同時認 real instance 和 duck-typed `Error & { name === "ConnectError" }`。
 
 ## Migration history
 
@@ -141,7 +143,7 @@ npm test              # vitest run（單次）
 npm run test:watch    # vitest（監視模式）
 ```
 
-- `formatToolDetail` 和 `parseApiError` 是從 `session-manager.ts` 提取出的 exported pure functions
+- `formatToolDetail`、`parseApiError`、`isConnectError` 是從 `session-manager.ts` 提取出的 exported pure functions
 - `ThreadReporter` 測試用 `vi.useFakeTimers()`，async flush 需搭配 `Promise.resolve()` yield
 - `config.test.ts` 每個 test case 都需要 `vi.resetModules()` + dynamic import（因 `_config` 快取）
 - Cursor SDK 在測試中 mock：`vi.mock("@cursor/sdk", () => ({ Agent: { create, resume, list } }))`

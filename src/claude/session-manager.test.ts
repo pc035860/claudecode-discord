@@ -29,7 +29,8 @@ vi.mock("@cursor/sdk", () => ({
   },
 }));
 
-import { sessionManager, formatToolDetail, parseApiError } from "./session-manager.js";
+import { ConnectError, Code } from "@connectrpc/connect";
+import { sessionManager, formatToolDetail, parseApiError, isConnectError } from "./session-manager.js";
 
 function mockChannel(id: string) {
   return { id, send: vi.fn().mockResolvedValue({ edit: vi.fn() }) } as any;
@@ -221,5 +222,77 @@ describe("parseApiError", () => {
     expect(parseApiError(input)).toBe(
       "API Error 429: wait. Please try again later.",
     );
+  });
+
+  it("returns admin-restart hint for unauthenticated ConnectError", () => {
+    const result = parseApiError("[unauthenticated] Error");
+    expect(result).toContain("contact the admin");
+    expect(result).toContain("unauthenticated");
+  });
+
+  it("returns retry hint for unavailable ConnectError without admin mention", () => {
+    const result = parseApiError("[unavailable] service down");
+    expect(result).toContain("temporarily unavailable");
+    expect(result).not.toContain("admin");
+  });
+
+  it("returns generic hint with code for unknown ConnectError codes", () => {
+    const result = parseApiError("[permission_denied] denied");
+    expect(result).toContain("permission_denied");
+    expect(result.toLowerCase()).toContain("connection error");
+  });
+
+  it("returns retry hint for deadline_exceeded ConnectError without admin mention", () => {
+    const result = parseApiError("[deadline_exceeded] timeout");
+    expect(result).toContain("temporarily unavailable");
+    expect(result).not.toContain("admin");
+  });
+
+  it("handles ConnectError class-name prefix", () => {
+    const result = parseApiError("ConnectError: [unauthenticated] Error");
+    expect(result).toContain("contact the admin");
+    expect(result).toContain("unauthenticated");
+  });
+
+  it("trims long multi-line unknown errors to short summary", () => {
+    const input = [
+      "TypeError: something blew up",
+      "    at frame1 (/foo.js:1:1)",
+      "    at frame2 (/foo.js:2:2)",
+      "    at frame3 (/foo.js:3:3)",
+      "    at frame4 (/foo.js:4:4)",
+      "    at frame5 (/foo.js:5:5)",
+    ].join("\n");
+    const result = parseApiError(input);
+    expect(result.toLowerCase()).toContain("unexpected internal error");
+    expect(result).toContain("TypeError: something blew up");
+    expect(result).not.toContain("frame3");
+  });
+});
+
+describe("isConnectError", () => {
+  it("identifies a real ConnectError instance", () => {
+    const err = new ConnectError("boom", Code.Unauthenticated);
+    expect(isConnectError(err)).toBe(true);
+  });
+
+  it("identifies a duck-typed Error with name ConnectError", () => {
+    const err = Object.assign(new Error("[unauthenticated] x"), {
+      name: "ConnectError",
+      code: 16,
+      rawMessage: "x",
+    });
+    expect(isConnectError(err)).toBe(true);
+  });
+
+  it("rejects a plain Error", () => {
+    expect(isConnectError(new Error("nope"))).toBe(false);
+  });
+
+  it("rejects non-Error values", () => {
+    expect(isConnectError("string")).toBe(false);
+    expect(isConnectError(null)).toBe(false);
+    expect(isConnectError(undefined)).toBe(false);
+    expect(isConnectError({ name: "ConnectError" })).toBe(false);
   });
 });

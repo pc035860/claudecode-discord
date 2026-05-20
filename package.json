@@ -12,6 +12,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
+    "@connectrpc/connect": "^1.7.0",
     "@cursor/sdk": "~1.0.13",
     "better-sqlite3": "^11.0.0",
     "discord.js": "^14.19.3",

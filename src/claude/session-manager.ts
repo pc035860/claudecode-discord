@@ -4,6 +4,7 @@ import {
   type Run,
   type SDKAgent,
 } from "@cursor/sdk";
+import { ConnectError } from "@connectrpc/connect";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
@@ -89,7 +90,49 @@ export function formatToolDetail(name: string, input: Record<string, unknown>): 
   return "";
 }
 
+const CONNECT_ERROR_REGEX = /^(?:ConnectError:\s*)?\[([a-z_]+)\]\s*(.*)$/is;
+const RETRYABLE_CONNECT_CODES = new Set([
+  "unavailable",
+  "deadline_exceeded",
+  "aborted",
+]);
+const MAX_RAW_ERROR_LEN = 200;
+const ERROR_PREVIEW_LEN = 80;
+
+export function isConnectError(
+  err: unknown,
+): err is Error & { code?: unknown; rawMessage?: unknown } {
+  return (
+    err instanceof ConnectError ||
+    (err instanceof Error && err.name === "ConnectError")
+  );
+}
+
+function formatConnectErrorMessage(code: string): string {
+  if (code === "unauthenticated") {
+    return L(
+      `❌ Authentication broken — the bot's API connection has been corrupted. Please contact the admin to restart the bot. (code: ${code})`,
+      `❌ 인증 오류 — 봇의 API 연결이 손상되었습니다. 관리자에게 봇 재시작을 요청해주세요. (code: ${code})`,
+    );
+  }
+  if (RETRYABLE_CONNECT_CODES.has(code)) {
+    return L(
+      `⚠️ Cursor service temporarily unavailable. Please try again in a moment. (code: ${code})`,
+      `⚠️ Cursor 서비스에 일시적으로 연결할 수 없습니다. 잠시 후 다시 시도하세요. (code: ${code})`,
+    );
+  }
+  return L(
+    `❌ Connection error from Cursor SDK (code: ${code}). If this keeps happening, please contact the admin to restart the bot.`,
+    `❌ Cursor SDK 연결 오류 (code: ${code}). 계속 발생하면 관리자에게 봇 재시작을 요청하세요.`,
+  );
+}
+
 export function parseApiError(rawMsg: string): string {
+  const ceMatch = rawMsg.match(CONNECT_ERROR_REGEX);
+  if (ceMatch) {
+    return formatConnectErrorMessage(ceMatch[1].toLowerCase());
+  }
+
   const jsonMatch = rawMsg.match(/API Error: (\d+)\s*(\{.*\})/s);
   if (jsonMatch) {
     try {
@@ -102,6 +145,13 @@ export function parseApiError(rawMsg: string): string {
     }
   } else if (rawMsg.includes("process exited with code")) {
     return `${rawMsg}. The server may be temporarily unavailable — please try again later.`;
+  }
+  if (rawMsg.length >= MAX_RAW_ERROR_LEN || rawMsg.includes("\n")) {
+    const firstLine = rawMsg.split("\n")[0].slice(0, ERROR_PREVIEW_LEN);
+    return L(
+      `❌ Unexpected internal error. Please contact the admin if this persists. (${firstLine})`,
+      `❌ 예상치 못한 내부 오류. 계속 발생하면 관리자에게 문의하세요. (${firstLine})`,
+    );
   }
   return rawMsg;
 }
@@ -343,11 +393,18 @@ class SessionManager {
 
       updateSessionStatus(channelId, "idle");
     } catch (error) {
+      console.error(`[sendMessage] error for channel ${channelId}:`, error);
+      if (isConnectError(error)) {
+        console.error("[sendMessage] ConnectError detail:", {
+          code: error.code,
+          rawMessage: error.rawMessage,
+        });
+      }
       const rawMsg = error instanceof Error ? error.message : "Unknown error occurred";
       const errMsg = parseApiError(rawMsg);
+      const display = /^[❌⚠️]/u.test(errMsg) ? errMsg : `❌ ${errMsg}`;
 
-      await markDone();
-      await channel.send(`❌ ${errMsg}`);
+      await Promise.all([markDone(), channel.send(display)]);
       updateSessionStatus(channelId, "offline");
     } finally {
       clearInterval(heartbeatInterval);
@@ -370,6 +427,14 @@ class SessionManager {
         channel.send(msg).catch(() => {});
         this.sendMessage(next.channel, next.prompt).catch((err) => {
           console.error("Queue sendMessage error:", err);
+          next.channel
+            .send(
+              L(
+                "⚠️ Failed to process queued message. Please try again later.",
+                "⚠️ 대기 중이던 메시지 처리에 실패했습니다. 잠시 후 다시 시도하세요.",
+              ),
+            )
+            .catch(() => {});
         });
       }
     }
