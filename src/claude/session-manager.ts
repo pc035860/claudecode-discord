@@ -357,6 +357,13 @@ class SessionManager {
       }
 
       if (final.status === "error") {
+        console.error(`[sendMessage] Cursor run errored for channel ${channelId}:`, {
+          runId: final.id,
+          result: final.result,
+          durationMs: final.durationMs,
+          model: final.model,
+          git: final.git,
+        });
         const errText = final.result || L("Run ended with an error", "런이 오류로 종료되었습니다");
         await channel.send(`❌ ${errText}`);
         updateSessionStatus(channelId, "offline");
