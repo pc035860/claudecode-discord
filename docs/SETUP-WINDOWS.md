@@ -226,6 +226,7 @@ SHOW_COST=true
 | `BASE_PROJECT_DIR` | Parent directory of your projects | `C:\Users\you\projects` |
 | `RATE_LIMIT_PER_MINUTE` | Message rate limit (default 10) | `10` |
 | `SHOW_COST` | Show estimated API cost (default true) | `false` |
+| `AUTO_RESTART_ON_AUTH_ERROR` | Auto-restart on Cursor SDK code 16 / unauthenticated (default true) | `false` |
 
 ---
 

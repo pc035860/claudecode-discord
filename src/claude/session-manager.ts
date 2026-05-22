@@ -4,7 +4,7 @@ import {
   type Run,
   type SDKAgent,
 } from "@cursor/sdk";
-import { ConnectError } from "@connectrpc/connect";
+import { Code, ConnectError } from "@connectrpc/connect";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
@@ -17,6 +17,7 @@ import {
   getSession,
 } from "../db/database.js";
 import { getConfig } from "../utils/config.js";
+import { maybeSelfRestart, isRestartScheduled } from "../utils/self-heal.js";
 import { L } from "../utils/i18n.js";
 import { ThreadReporter } from "./thread-reporter.js";
 import {
@@ -406,6 +407,9 @@ class SessionManager {
           code: error.code,
           rawMessage: error.rawMessage,
         });
+        if (error.code === Code.Unauthenticated) {
+          maybeSelfRestart();
+        }
       }
       const rawMsg = error instanceof Error ? error.message : "Unknown error occurred";
       const errMsg = parseApiError(rawMsg);
@@ -423,7 +427,20 @@ class SessionManager {
       }
 
       const queue = this.messageQueue.get(channelId);
-      if (queue && queue.length > 0) {
+      if (queue && queue.length > 0 && isRestartScheduled()) {
+        // A code-16 self-restart is pending. The in-memory queue won't survive
+        // the restart, and starting the next run now would just hit the same
+        // broken connection. Drop the queue and tell the user to resend.
+        this.messageQueue.delete(channelId);
+        channel
+          .send(
+            L(
+              "⚠️ Bot is restarting to recover the connection. Queued messages were cleared — please resend once it's back.",
+              "⚠️ 연결 복구를 위해 봇을 재시작합니다. 대기 중이던 메시지가 초기화되었으니 복구 후 다시 보내주세요.",
+            ),
+          )
+          .catch(() => {});
+      } else if (queue && queue.length > 0) {
         const next = queue.shift()!;
         if (queue.length === 0) this.messageQueue.delete(channelId);
         const remaining = queue.length;

@@ -1,8 +1,9 @@
 import "dotenv/config";
 import fs from "node:fs";
 import path from "node:path";
-import { ConnectError } from "@connectrpc/connect";
+import { Code, ConnectError } from "@connectrpc/connect";
 import { loadConfig } from "./utils/config.js";
+import { maybeSelfRestart } from "./utils/self-heal.js";
 import { initDatabase } from "./db/database.js";
 import { startBot } from "./bot/client.js";
 
@@ -61,6 +62,9 @@ async function main() {
       console.error(
         `[unhandledRejection] BOT MAY BE IN A BAD STATE. If users report repeated [${String(code)}] errors, please restart the bot process.`,
       );
+      if (code === Code.Unauthenticated) {
+        maybeSelfRestart();
+      }
     } else {
       console.error("[unhandledRejection]", reason);
     }

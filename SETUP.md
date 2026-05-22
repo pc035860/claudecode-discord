@@ -179,6 +179,7 @@ SHOW_COST=true
 | `BASE_PROJECT_DIR` | Parent directory of your projects | `/Users/you/projects` |
 | `RATE_LIMIT_PER_MINUTE` | Message rate limit (default 10) | `10` |
 | `SHOW_COST` | Show estimated API cost in results (default true) | `false` |
+| `AUTO_RESTART_ON_AUTH_ERROR` | Auto-restart on Cursor SDK code 16 / unauthenticated so PM2 brings up a clean process (default true) | `false` |
 
 `BASE_PROJECT_DIR` is the base path when using folder names in `/register`.
 Example: If `BASE_PROJECT_DIR=/Users/you/projects`, then `/register my-app` → `/Users/you/projects/my-app`
