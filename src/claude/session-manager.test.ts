@@ -29,6 +29,19 @@ vi.mock("@cursor/sdk", () => ({
   },
 }));
 
+vi.mock("../utils/self-heal.js", () => ({
+  maybeSelfRestart: vi.fn(),
+  isRestartScheduled: vi.fn(() => false),
+}));
+
+vi.mock("./output-formatter.js", () => ({
+  createResultEmbed: vi.fn(() => ({})),
+  createStopButton: vi.fn(() => ({})),
+  createCompletedButton: vi.fn(() => ({})),
+  extractAttachments: vi.fn((text: string) => ({ cleanText: text, attachmentPaths: [] })),
+  sendAttachments: vi.fn().mockResolvedValue(undefined),
+}));
+
 import { ConnectError, Code } from "@connectrpc/connect";
 import { sessionManager, formatToolDetail, parseApiError, isConnectError } from "./session-manager.js";
 
@@ -110,6 +123,176 @@ describe("SessionManager", () => {
     it("returns false for inactive session", async () => {
       expect(await sessionManager.stopSession("no-session")).toBe(false);
     });
+  });
+});
+
+describe("sendMessage retry on ConnectError code 16", () => {
+  const channelId = "retry-test-ch";
+  const authError = new ConnectError(
+    "[unauthenticated] Error",
+    Code.Unauthenticated,
+  );
+
+  async function getResume(): Promise<any> {
+    return (await import("@cursor/sdk")).Agent.resume;
+  }
+
+  async function getSelfHeal(): Promise<any> {
+    return await import("../utils/self-heal.js");
+  }
+
+  function makeRun(status: "completed" | "error" = "completed") {
+    return {
+      stream: vi.fn(() => (async function* () {})()),
+      wait: vi.fn().mockResolvedValue({
+        id: "run-1",
+        status,
+        result: "ok",
+        durationMs: 100,
+      }),
+      cancel: vi.fn().mockResolvedValue(undefined),
+    };
+  }
+
+  function makeAgent(agentId = "agent-1") {
+    return {
+      agentId,
+      send: vi.fn().mockResolvedValue(makeRun()),
+      close: vi.fn(),
+    };
+  }
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    const db = await import("../db/database.js");
+    (db.getProject as any).mockReturnValue({
+      id: "p1",
+      channel_id: channelId,
+      project_path: "/tmp/retry-test",
+    });
+    // Seed a known agent_id so sendMessage takes the Agent.resume path.
+    (db.getSession as any).mockReturnValue({
+      id: "db-1",
+      agent_id: "agent-1",
+    });
+    const selfHeal = await getSelfHeal();
+    selfHeal.isRestartScheduled.mockReturnValue(false);
+  });
+
+  afterEach(async () => {
+    if (sessionManager.isActive(channelId)) {
+      await sessionManager.stopSession(channelId);
+    }
+  });
+
+  it("retries once when Agent.resume throws unauthenticated, then succeeds silently", async () => {
+    const resume = await getResume();
+    resume
+      .mockRejectedValueOnce(authError)
+      .mockResolvedValueOnce(makeAgent());
+
+    const channel = mockChannel(channelId);
+    await sessionManager.sendMessage(channel, "hello");
+
+    expect(resume).toHaveBeenCalledTimes(2);
+
+    const sent = (channel.send as any).mock.calls.map((c: any[]) => c[0]);
+    const errs = sent.filter(
+      (m: any) => typeof m === "string" && /^[❌⚠️]/u.test(m),
+    );
+    expect(errs).toHaveLength(0);
+
+    const selfHeal = await getSelfHeal();
+    expect(selfHeal.maybeSelfRestart).not.toHaveBeenCalled();
+  });
+
+  it("falls back to maybeSelfRestart when both attempts throw unauthenticated", async () => {
+    const resume = await getResume();
+    resume.mockRejectedValueOnce(authError).mockRejectedValueOnce(authError);
+
+    const channel = mockChannel(channelId);
+    await sessionManager.sendMessage(channel, "hello");
+
+    expect(resume).toHaveBeenCalledTimes(2);
+
+    const selfHeal = await getSelfHeal();
+    expect(selfHeal.maybeSelfRestart).toHaveBeenCalledTimes(1);
+
+    const sent = (channel.send as any).mock.calls.map((c: any[]) => c[0]);
+    const adminMsg = sent.find(
+      (m: any) =>
+        typeof m === "string" && /Authentication broken/.test(m),
+    );
+    expect(adminMsg).toBeDefined();
+  });
+
+  it("does not retry for non-auth ConnectError codes", async () => {
+    const resume = await getResume();
+    const otherError = new ConnectError("[internal] boom", Code.Internal);
+    resume.mockRejectedValueOnce(otherError);
+
+    const channel = mockChannel(channelId);
+    await sessionManager.sendMessage(channel, "hello");
+
+    expect(resume).toHaveBeenCalledTimes(1);
+
+    const selfHeal = await getSelfHeal();
+    expect(selfHeal.maybeSelfRestart).not.toHaveBeenCalled();
+  });
+
+  it("retries once when agent.send throws unauthenticated (run not yet started), disposing broken handle", async () => {
+    const resume = await getResume();
+    const failedAgent = makeAgent("agent-1");
+    const goodAgent = makeAgent("agent-1");
+    failedAgent.send = vi.fn().mockRejectedValueOnce(authError);
+    resume
+      .mockResolvedValueOnce(failedAgent)
+      .mockResolvedValueOnce(goodAgent);
+
+    const channel = mockChannel(channelId);
+    await sessionManager.sendMessage(channel, "hello");
+
+    expect(resume).toHaveBeenCalledTimes(2);
+    expect(failedAgent.send).toHaveBeenCalledTimes(1);
+    expect(goodAgent.send).toHaveBeenCalledTimes(1);
+    expect(failedAgent.close).toHaveBeenCalled();
+
+    const selfHeal = await getSelfHeal();
+    expect(selfHeal.maybeSelfRestart).not.toHaveBeenCalled();
+  });
+
+  it("does not retry when run.wait throws unauthenticated (run already started)", async () => {
+    const resume = await getResume();
+    const agentInstance = makeAgent();
+    const run = {
+      stream: vi.fn(() => (async function* () {})()),
+      wait: vi.fn().mockRejectedValue(authError),
+      cancel: vi.fn().mockResolvedValue(undefined),
+    };
+    agentInstance.send = vi.fn().mockResolvedValue(run);
+    resume.mockResolvedValueOnce(agentInstance);
+
+    const channel = mockChannel(channelId);
+    await sessionManager.sendMessage(channel, "hello");
+
+    expect(resume).toHaveBeenCalledTimes(1);
+    expect(agentInstance.send).toHaveBeenCalledTimes(1);
+
+    const selfHeal = await getSelfHeal();
+    expect(selfHeal.maybeSelfRestart).toHaveBeenCalledTimes(1);
+  });
+
+  it("skips retry when isRestartScheduled() already true", async () => {
+    const selfHeal = await getSelfHeal();
+    selfHeal.isRestartScheduled.mockReturnValue(true);
+    const resume = await getResume();
+    resume.mockRejectedValueOnce(authError);
+
+    const channel = mockChannel(channelId);
+    await sessionManager.sendMessage(channel, "hello");
+
+    expect(resume).toHaveBeenCalledTimes(1);
+    expect(selfHeal.maybeSelfRestart).toHaveBeenCalledTimes(1);
   });
 });
 
