@@ -109,6 +109,19 @@ export function isConnectError(
   );
 }
 
+function shouldRetryAuth(
+  err: unknown,
+  state: { cancelled: boolean; runStarted: boolean },
+): boolean {
+  return (
+    isConnectError(err) &&
+    err.code === Code.Unauthenticated &&
+    !isRestartScheduled() &&
+    !state.cancelled &&
+    !state.runStarted
+  );
+}
+
 function formatConnectErrorMessage(code: string): string {
   if (code === "unauthenticated") {
     return L(
@@ -240,7 +253,16 @@ class SessionManager {
     };
     this.sessions.set(channelId, placeholder);
 
-    try {
+    // No systemPrompt API in Cursor SDK — prepend on fresh only; resume relies
+    // on conversation history to retain the convention.
+    const augmentedPrompt =
+      !resumeAgentId && BOT_RULES
+        ? `${BOT_RULES}\n\n---\n\n${prompt}`
+        : prompt;
+
+    // One attempt: build → send → stream → wait → result. `resumeFrom` lets
+    // retry feed back placeholder.agentId after a first-attempt failure.
+    const runAttempt = async (resumeFrom: string | null): Promise<void> => {
       // Cursor SDK local agents require an explicit model on every call —
       // resume() does not inherit the model from the persisted agent record.
       const modelSelection = {
@@ -255,8 +277,8 @@ class SessionManager {
       };
 
       let agent: SDKAgent;
-      if (resumeAgentId) {
-        agent = await Agent.resume(resumeAgentId, {
+      if (resumeFrom) {
+        agent = await Agent.resume(resumeFrom, {
           apiKey: config.CURSOR_API_KEY,
           model: modelSelection,
           local: localOptions,
@@ -279,13 +301,6 @@ class SessionManager {
         updateSessionStatus(channelId, "offline");
         return;
       }
-
-      // No systemPrompt API in Cursor SDK — prepend on fresh only; resume
-      // relies on conversation history to retain the convention.
-      const augmentedPrompt =
-        !resumeAgentId && BOT_RULES
-          ? `${BOT_RULES}\n\n---\n\n${prompt}`
-          : prompt;
 
       const run = await agent.send(augmentedPrompt);
       placeholder.run = run;
@@ -400,18 +415,59 @@ class SessionManager {
       }
 
       updateSessionStatus(channelId, "idle");
+    };
+
+    try {
+      await runAttempt(resumeAgentId);
     } catch (error) {
-      console.error(`[sendMessage] error for channel ${channelId}:`, error);
-      if (isConnectError(error)) {
+      let finalError: unknown = error;
+      // Skip retry once a Run is in flight — the server may have begun
+      // executing tools, and re-sending the prompt could duplicate side effects.
+      const canRetry = shouldRetryAuth(error, {
+        cancelled: placeholder.cancelRequested,
+        runStarted: placeholder.run !== null,
+      });
+      if (canRetry) {
+        console.warn(
+          `[self-heal] code-16 on attempt 1 for ${channelId}, agentId=${placeholder.agentId ?? "<none>"}, retrying in-process...`,
+        );
+        // Drop the broken handle synchronously — async dispose would route
+        // through the same broken transport and may hang.
+        try {
+          placeholder.agent?.close();
+        } catch {
+          // ignore — handle already broken
+        }
+        placeholder.agent = null;
+        placeholder.run = null;
+        // Reset UI state so the next renderStatus() writes through; keep
+        // currentMessage / heartbeat / threadReporter / startTime intact.
+        toolUseCount = 0;
+        lastStatusContent = "";
+        lastActivity = L("Reconnecting...", "재연결 중...");
+        try {
+          await runAttempt(placeholder.agentId ?? resumeAgentId);
+          console.info(`[self-heal] in-process retry succeeded for ${channelId}`);
+          return;
+        } catch (retryError) {
+          console.error(
+            `[self-heal] in-process retry also failed for ${channelId}, delegating to error handler:`,
+            retryError instanceof Error ? retryError.message : retryError,
+          );
+          finalError = retryError;
+        }
+      }
+      console.error(`[sendMessage] error for channel ${channelId}:`, finalError);
+      if (isConnectError(finalError)) {
         console.error("[sendMessage] ConnectError detail:", {
-          code: error.code,
-          rawMessage: error.rawMessage,
+          code: finalError.code,
+          rawMessage: finalError.rawMessage,
         });
-        if (error.code === Code.Unauthenticated) {
+        if (finalError.code === Code.Unauthenticated) {
           maybeSelfRestart();
         }
       }
-      const rawMsg = error instanceof Error ? error.message : "Unknown error occurred";
+      const rawMsg = finalError instanceof Error ? finalError.message : "Unknown error occurred";
       const errMsg = parseApiError(rawMsg);
       const display = /^[❌⚠️]/u.test(errMsg) ? errMsg : `❌ ${errMsg}`;
 
