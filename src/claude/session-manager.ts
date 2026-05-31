@@ -2,6 +2,7 @@ import {
   Agent,
   type LocalAgentOptions,
   type Run,
+  type RunResult,
   type SDKAgent,
 } from "@cursor/sdk";
 import { Code, ConnectError } from "@connectrpc/connect";
@@ -120,6 +121,27 @@ function shouldRetryAuth(
     !state.cancelled &&
     !state.runStarted
   );
+}
+
+const TRANSIENT_RUN_MAX_DURATION_MS = 5_000;
+
+export function isTransientRunFailure(final: RunResult): boolean {
+  return (
+    final.status === "error" &&
+    !final.result &&
+    (final.durationMs ?? Infinity) < TRANSIENT_RUN_MAX_DURATION_MS
+  );
+}
+
+export class TransientRunError extends Error {
+  readonly final: RunResult;
+  constructor(final: RunResult) {
+    super(
+      `Cursor run ended with transient error (id=${final.id}, durationMs=${final.durationMs ?? "?"})`,
+    );
+    this.name = "TransientRunError";
+    this.final = final;
+  }
 }
 
 function formatConnectErrorMessage(code: string): string {
@@ -380,6 +402,14 @@ class SessionManager {
           model: final.model,
           git: final.git,
         });
+        // Heuristic: short run + no server-provided error text usually means
+        // the failure happened before tool execution started (transient
+        // backend/transport hiccup). Throw so the outer catch can retry once.
+        // Fatal errors (with result text, or long durationMs implying tools
+        // already ran) fall through to the user-facing ❌ path.
+        if (isTransientRunFailure(final) && !placeholder.cancelRequested) {
+          throw new TransientRunError(final);
+        }
         const errText = final.result || L("Run ended with an error", "런이 오류로 종료되었습니다");
         await channel.send(`❌ ${errText}`);
         updateSessionStatus(channelId, "offline");
@@ -452,6 +482,36 @@ class SessionManager {
         } catch (retryError) {
           console.error(
             `[self-heal] in-process retry also failed for ${channelId}, delegating to error handler:`,
+            retryError instanceof Error ? retryError.message : retryError,
+          );
+          finalError = retryError;
+        }
+      } else if (error instanceof TransientRunError && !placeholder.cancelRequested) {
+        // run.wait() returned status:"error" with no cause and a short
+        // durationMs — likely transient server-side failure that hadn't
+        // started tool execution. Re-resume the same agentId and replay
+        // the prompt once. Same cleanup pattern as the code-16 path.
+        sessionDone = false;
+        console.warn(
+          `[self-heal] transient run-end error on attempt 1 for ${channelId}, runId=${error.final.id}, durationMs=${error.final.durationMs}, retrying in-process...`,
+        );
+        try {
+          placeholder.agent?.close();
+        } catch {
+          // ignore — handle already broken
+        }
+        placeholder.agent = null;
+        placeholder.run = null;
+        toolUseCount = 0;
+        lastStatusContent = "";
+        lastActivity = L("Reconnecting...", "재연결 중...");
+        try {
+          await runAttempt(placeholder.agentId ?? resumeAgentId);
+          console.info(`[self-heal] transient retry succeeded for ${channelId}`);
+          return;
+        } catch (retryError) {
+          console.error(
+            `[self-heal] transient retry also failed for ${channelId}, delegating to error handler:`,
             retryError instanceof Error ? retryError.message : retryError,
           );
           finalError = retryError;

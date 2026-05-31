@@ -43,7 +43,13 @@ vi.mock("./output-formatter.js", () => ({
 }));
 
 import { ConnectError, Code } from "@connectrpc/connect";
-import { sessionManager, formatToolDetail, parseApiError, isConnectError } from "./session-manager.js";
+import {
+  sessionManager,
+  formatToolDetail,
+  parseApiError,
+  isConnectError,
+  isTransientRunFailure,
+} from "./session-manager.js";
 
 function mockChannel(id: string) {
   return { id, send: vi.fn().mockResolvedValue({ edit: vi.fn() }) } as any;
@@ -293,6 +299,192 @@ describe("sendMessage retry on ConnectError code 16", () => {
 
     expect(resume).toHaveBeenCalledTimes(1);
     expect(selfHeal.maybeSelfRestart).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("isTransientRunFailure", () => {
+  const base = { id: "r", model: { id: "composer-2" } } as any;
+
+  it("returns true for status=error + no result + durationMs < 5000", () => {
+    expect(
+      isTransientRunFailure({ ...base, status: "error", durationMs: 2_500 }),
+    ).toBe(true);
+  });
+
+  it("returns false when status is finished", () => {
+    expect(
+      isTransientRunFailure({ ...base, status: "finished", durationMs: 2_500 }),
+    ).toBe(false);
+  });
+
+  it("returns false when result text is present (server reported an error)", () => {
+    expect(
+      isTransientRunFailure({
+        ...base,
+        status: "error",
+        result: "boom",
+        durationMs: 2_500,
+      }),
+    ).toBe(false);
+  });
+
+  it("returns false when durationMs >= 5000ms (tools may have run)", () => {
+    expect(
+      isTransientRunFailure({ ...base, status: "error", durationMs: 5_000 }),
+    ).toBe(false);
+  });
+
+  it("returns false when durationMs missing", () => {
+    expect(isTransientRunFailure({ ...base, status: "error" })).toBe(false);
+  });
+});
+
+describe("sendMessage retry on transient run-end error", () => {
+  const channelId = "transient-test-ch";
+
+  function makeAgent(agentId = "agent-1") {
+    const run: any = {
+      stream: vi.fn(() => (async function* () {})()),
+      wait: vi.fn().mockResolvedValue({
+        id: "run-default",
+        status: "finished",
+        result: "ok",
+        durationMs: 100,
+      }),
+      cancel: vi.fn().mockResolvedValue(undefined),
+    };
+    return {
+      agentId,
+      send: vi.fn().mockResolvedValue(run),
+      close: vi.fn(),
+      _run: run,
+    };
+  }
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    const db = await import("../db/database.js");
+    (db.getProject as any).mockReturnValue({
+      id: "p1",
+      channel_id: channelId,
+      project_path: "/tmp/transient-test",
+    });
+    (db.getSession as any).mockReturnValue({
+      id: "db-1",
+      agent_id: "agent-1",
+    });
+    const selfHeal = await import("../utils/self-heal.js");
+    (selfHeal.isRestartScheduled as any).mockReturnValue(false);
+  });
+
+  afterEach(async () => {
+    if (sessionManager.isActive(channelId)) {
+      await sessionManager.stopSession(channelId);
+    }
+  });
+
+  it("retries once when run.wait() returns transient error, then succeeds silently", async () => {
+    const resume = (await import("@cursor/sdk")).Agent.resume as any;
+    const first = makeAgent("agent-1");
+    first._run.wait.mockResolvedValueOnce({
+      id: "run-transient",
+      status: "error",
+      result: undefined,
+      durationMs: 2_500,
+    });
+    const second = makeAgent("agent-1");
+    resume.mockResolvedValueOnce(first).mockResolvedValueOnce(second);
+
+    const channel = mockChannel(channelId);
+    await sessionManager.sendMessage(channel, "hello");
+
+    expect(resume).toHaveBeenCalledTimes(2);
+    expect(first.close).toHaveBeenCalled();
+    expect(second.send).toHaveBeenCalledTimes(1);
+
+    const sent = (channel.send as any).mock.calls.map((c: any[]) => c[0]);
+    const errs = sent.filter(
+      (m: any) => typeof m === "string" && /^[❌⚠️]/u.test(m),
+    );
+    expect(errs).toHaveLength(0);
+  });
+
+  it("does not retry when run.wait() error has server result text (fatal)", async () => {
+    const resume = (await import("@cursor/sdk")).Agent.resume as any;
+    const agent = makeAgent("agent-1");
+    agent._run.wait.mockResolvedValue({
+      id: "run-fatal",
+      status: "error",
+      result: "Server-side limit exceeded",
+      durationMs: 1_000,
+    });
+    resume.mockResolvedValueOnce(agent);
+
+    const channel = mockChannel(channelId);
+    await sessionManager.sendMessage(channel, "hello");
+
+    expect(resume).toHaveBeenCalledTimes(1);
+    expect(agent.send).toHaveBeenCalledTimes(1);
+
+    const sent = (channel.send as any).mock.calls.map((c: any[]) => c[0]);
+    const matched = sent.find(
+      (m: any) =>
+        typeof m === "string" && /Server-side limit exceeded/.test(m),
+    );
+    expect(matched).toBeDefined();
+  });
+
+  it("does not retry when durationMs >= 5000 (tools may have executed)", async () => {
+    const resume = (await import("@cursor/sdk")).Agent.resume as any;
+    const agent = makeAgent("agent-1");
+    agent._run.wait.mockResolvedValue({
+      id: "run-long",
+      status: "error",
+      result: undefined,
+      durationMs: 12_000,
+    });
+    resume.mockResolvedValueOnce(agent);
+
+    const channel = mockChannel(channelId);
+    await sessionManager.sendMessage(channel, "hello");
+
+    expect(resume).toHaveBeenCalledTimes(1);
+    expect(agent.send).toHaveBeenCalledTimes(1);
+
+    const sent = (channel.send as any).mock.calls.map((c: any[]) => c[0]);
+    const errs = sent.filter(
+      (m: any) => typeof m === "string" && /^❌/.test(m),
+    );
+    expect(errs.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("surfaces ❌ when transient retry also returns transient error", async () => {
+    const resume = (await import("@cursor/sdk")).Agent.resume as any;
+    const first = makeAgent("agent-1");
+    first._run.wait.mockResolvedValueOnce({
+      id: "run-1",
+      status: "error",
+      result: undefined,
+      durationMs: 2_500,
+    });
+    const second = makeAgent("agent-1");
+    second._run.wait.mockResolvedValueOnce({
+      id: "run-2",
+      status: "error",
+      result: undefined,
+      durationMs: 2_500,
+    });
+    resume.mockResolvedValueOnce(first).mockResolvedValueOnce(second);
+
+    const channel = mockChannel(channelId);
+    await sessionManager.sendMessage(channel, "hello");
+
+    expect(resume).toHaveBeenCalledTimes(2);
+    const sent = (channel.send as any).mock.calls.map((c: any[]) => c[0]);
+    const errs = sent.filter(
+      (m: any) => typeof m === "string" && /^❌/.test(m),
+    );
+    expect(errs.length).toBeGreaterThanOrEqual(1);
   });
 });
 
