@@ -324,7 +324,14 @@ class SessionManager {
         return;
       }
 
-      const run = await agent.send(augmentedPrompt);
+      // local.force expires any stale persisted run before sending. The bot's
+      // sessions map already serializes runs per channel, so an "active" run
+      // at send time can only be a leftover from a killed process (e.g. pm2
+      // delete/restart mid-run) — without force, agent.send throws
+      // "already has active run" and the channel wedges permanently.
+      const run = await agent.send(augmentedPrompt, {
+        local: { force: true },
+      });
       placeholder.run = run;
 
       // If user pressed Stop during agent.send, cancel immediately.
