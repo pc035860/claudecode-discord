@@ -305,37 +305,54 @@ describe("sendMessage retry on ConnectError code 16", () => {
 describe("isTransientRunFailure", () => {
   const base = { id: "r", model: { id: "composer-2" } } as any;
 
-  it("returns true for status=error + no result + durationMs < 5000", () => {
+  it("returns true for status=error + no result + no tool calls observed", () => {
     expect(
-      isTransientRunFailure({ ...base, status: "error", durationMs: 2_500 }),
+      isTransientRunFailure({ ...base, status: "error", durationMs: 8_900 }, 0),
     ).toBe(true);
+  });
+
+  it("returns true regardless of durationMs when no tools ran", () => {
+    expect(isTransientRunFailure({ ...base, status: "error" }, 0)).toBe(true);
   });
 
   it("returns false when status is finished", () => {
     expect(
-      isTransientRunFailure({ ...base, status: "finished", durationMs: 2_500 }),
+      isTransientRunFailure({ ...base, status: "finished", durationMs: 2_500 }, 0),
     ).toBe(false);
   });
 
   it("returns false when result text is present (server reported an error)", () => {
     expect(
-      isTransientRunFailure({
-        ...base,
-        status: "error",
-        result: "boom",
-        durationMs: 2_500,
-      }),
+      isTransientRunFailure(
+        {
+          ...base,
+          status: "error",
+          result: "boom",
+          durationMs: 2_500,
+        },
+        0,
+      ),
     ).toBe(false);
   });
 
-  it("returns false when durationMs >= 5000ms (tools may have run)", () => {
+  it("returns false when tool calls were observed (side effects possible)", () => {
     expect(
-      isTransientRunFailure({ ...base, status: "error", durationMs: 5_000 }),
+      isTransientRunFailure({ ...base, status: "error", durationMs: 2_500 }, 3),
     ).toBe(false);
   });
 
-  it("returns false when durationMs missing", () => {
-    expect(isTransientRunFailure({ ...base, status: "error" })).toBe(false);
+  it("returns false when error.message is present (e.g. provider content block)", () => {
+    expect(
+      isTransientRunFailure(
+        {
+          ...base,
+          status: "error",
+          error: { message: "Request blocked" },
+          durationMs: 6_700,
+        },
+        0,
+      ),
+    ).toBe(false);
   });
 });
 
@@ -434,9 +451,19 @@ describe("sendMessage retry on transient run-end error", () => {
     expect(matched).toBeDefined();
   });
 
-  it("does not retry when durationMs >= 5000 (tools may have executed)", async () => {
+  it("does not retry when tool_call events were observed (side effects possible)", async () => {
     const resume = (await import("@cursor/sdk")).Agent.resume as any;
     const agent = makeAgent("agent-1");
+    agent._run.stream = vi.fn(() =>
+      (async function* () {
+        yield {
+          type: "tool_call",
+          status: "running",
+          name: "shell",
+          args: {},
+        };
+      })(),
+    );
     agent._run.wait.mockResolvedValue({
       id: "run-long",
       status: "error",
@@ -485,6 +512,8 @@ describe("sendMessage retry on transient run-end error", () => {
       (m: any) => typeof m === "string" && /^❌/.test(m),
     );
     expect(errs.length).toBeGreaterThanOrEqual(1);
+    const selfHeal: any = await import("../utils/self-heal.js");
+    expect(selfHeal.maybeSelfRestart).toHaveBeenCalledTimes(1);
   });
 });
 

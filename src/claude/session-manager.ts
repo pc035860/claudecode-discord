@@ -123,13 +123,21 @@ function shouldRetryAuth(
   );
 }
 
-const TRANSIENT_RUN_MAX_DURATION_MS = 5_000;
+export function runErrorText(final: RunResult): string | undefined {
+  return final.result || final.error?.message || undefined;
+}
 
-export function isTransientRunFailure(final: RunResult): boolean {
+export function isTransientRunFailure(
+  final: RunResult,
+  toolCallsObserved: number,
+): boolean {
+  // Any server-provided error text (result or error.message, e.g. provider
+  // content moderation "Request blocked") is fatal — retrying replays the
+  // same rejection. Only errors with no explanation AND no tool_call events
+  // streamed qualify as transient: the server never reached tool execution,
+  // so replaying the prompt cannot duplicate side effects.
   return (
-    final.status === "error" &&
-    !final.result &&
-    (final.durationMs ?? Infinity) < TRANSIENT_RUN_MAX_DURATION_MS
+    final.status === "error" && !runErrorText(final) && toolCallsObserved === 0
   );
 }
 
@@ -405,19 +413,23 @@ class SessionManager {
         console.error(`[sendMessage] Cursor run errored for channel ${channelId}:`, {
           runId: final.id,
           result: final.result,
+          error: final.error,
           durationMs: final.durationMs,
           model: final.model,
           git: final.git,
         });
-        // Heuristic: short run + no server-provided error text usually means
-        // the failure happened before tool execution started (transient
-        // backend/transport hiccup). Throw so the outer catch can retry once.
-        // Fatal errors (with result text, or long durationMs implying tools
-        // already ran) fall through to the user-facing ❌ path.
-        if (isTransientRunFailure(final) && !placeholder.cancelRequested) {
+        // Heuristic: no server-provided error text + no tool_call events
+        // observed means the failure happened before tool execution started
+        // (transient backend/transport hiccup). Throw so the outer catch can
+        // retry once. Fatal errors (with result text, or tools already run)
+        // fall through to the user-facing ❌ path.
+        if (
+          isTransientRunFailure(final, toolUseCount) &&
+          !placeholder.cancelRequested
+        ) {
           throw new TransientRunError(final);
         }
-        const errText = final.result || L("Run ended with an error", "런이 오류로 종료되었습니다");
+        const errText = runErrorText(final) || L("Run ended with an error", "런이 오류로 종료되었습니다");
         await channel.send(`❌ ${errText}`);
         updateSessionStatus(channelId, "offline");
         return;
@@ -521,6 +533,13 @@ class SessionManager {
             `[self-heal] transient retry also failed for ${channelId}, delegating to error handler:`,
             retryError instanceof Error ? retryError.message : retryError,
           );
+          // Two transient failures in a row means the SDK client state in
+          // this process has gone bad (fresh-process spikes succeed on the
+          // same agent + prompt) — same failure class as code 16, so reuse
+          // the process-restart defense.
+          if (retryError instanceof TransientRunError) {
+            maybeSelfRestart();
+          }
           finalError = retryError;
         }
       }
