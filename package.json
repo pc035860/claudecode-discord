@@ -13,7 +13,7 @@
   },
   "dependencies": {
     "@connectrpc/connect": "^1.7.0",
-    "@cursor/sdk": "^1.0.23",
+    "@cursor/sdk": "^1.0.27",
     "better-sqlite3": "^11.0.0",
     "discord.js": "^14.19.3",
     "dotenv": "^17.2.4",
