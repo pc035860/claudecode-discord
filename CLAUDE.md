@@ -9,7 +9,7 @@
 ```bash
 # 首次註冊
 npm run build
-pm2 start dist/index.js --name claudecode-discord
+pm2 start dist/index.js --name claudecode-discord --cron-restart "0 6 * * *"
 pm2 save
 
 # 日常操作
@@ -28,7 +28,7 @@ npm run build && pm2 restart claudecode-discord
 
 ```bash
 pm2 delete claudecode-discord
-pm2 start dist/index.js --name claudecode-discord
+pm2 start dist/index.js --name claudecode-discord --cron-restart "0 6 * * *"
 pm2 save
 ```
 
@@ -131,6 +131,9 @@ Cursor SDK 的 `RunResult` 目前不提供 cost。`SHOW_COST=true` 時 footer �
   2. **第二道：process restart**（`src/utils/self-heal.ts`，共用模組）。`maybeSelfRestart()` 偵測 `Code.Unauthenticated` 後 `setTimeout(() => process.exit(1), 2000)` 讓 PM2（`autorestart: true`）拉起乾淨 process。受 env `AUTO_RESTART_ON_AUTH_ERROR` 控制、預設開。兩條路徑會呼叫：`unhandledRejection` handler (`src/index.ts`，code 16 逃成 unhandled stream reject) 和 `sendMessage` catch block（retry 失敗或 `runStarted` gate 擋下時）。守門：`process.uptime() < 300s` 的 code 16 只 log 不 exit（防 API key 真壞時 crash loop）、module-scope `restartScheduled` 一次性旗標（跨兩條路徑共享，不重複排程）、延遲 2s 讓 in-flight Discord 訊息 flush。觸發那則訊息仍會失敗，重啟後下一則才正常。
 
   **其他細節**：`sendMessage` finally drain queue 前先查 `isRestartScheduled()`：restart pending 時清掉 in-memory queue（撐不過重啟）並通知使用者重送，不在壞連線上起新 run。`parseApiError` 對 ConnectError 走獨立 branch；catch block 把訊息送 Discord 前**先檢查開頭是不是 `❌/⚠️`** 避免 double emoji。
+
+- **後端 stale-auth 文字 = 可重試**（`isStaleAuthRunError`）：run-end `error.message` 出現 `Authentication error If you are logged in, try logging out and back in.` 時，**不是** fatal。該字串 grep 遍 `@cursor/sdk` 找不到 → 純後端原文，SDK 只是照抄。實測 2026-08-18：跑了 5 天的 bot process 連炸三次（含**新建**的 agent，故排除 session/resume 因素），同一時刻 fresh spike 用同一把 key + 同 model + 同 cwd 全部 `pong`；`pm2 restart` 後立即恢復 → 病因是本 process 的 SDK client 狀態，不是 key / 專案設定 / Cursor 全域故障。因此 `isTransientRunFailure` 對它開例外（仍受 `toolCallsObserved === 0` 把關），走 retry → 失敗才 `maybeSelfRestart()`。**注意兩道舊防線認的是 `ConnectError` code 16，這個症狀不是**，所以在此之前完全不會自癒。
+- **預防性重啟**：PM2 `--cron-restart "0 6 * * *"` 每天 06:00 重啟，趕在壞 state 累積前重置（觀察到 2~5 天會壞）。代價：硬重啟不等 in-flight run，06:00 正在跑的工作會被砍。設定存在 `~/.pm2/dump.pm2`，**`pm2 delete` + `start` 時務必帶回 `--cron-restart`**，否則會靜默掉設定。
 
 - **Transient run-end retry**（`session-manager.ts` `isTransientRunFailure` + `runErrorText` + `TransientRunError`）：SDK ≥1.0.23 的 `RunResult` 有 `error?: { message, code? }`（1.0.13 沒有，當年 spike 才會找不到 metadata）。**先看 `runErrorText(final)`（`result` 或 `error.message`）**：有文字就是 fatal（例：grok provider 內容審查「Request blocked ... usage guidelines」，retry 只會重複被擋）→ 直接把該文字送 ❌ + offline。Transient 判定 = status error + 無任何 error 文字 + `toolUseCount === 0`（沒進到 tool 執行，重送不會 double-execute；不用 duration 門檻，失敗時長 3~17 秒都見過）→ throw `TransientRunError`，外層 catch 跑 cleanup（`agent?.close()` 同步 close、reset UI state、`Agent.resume(placeholder.agentId ?? resumeAgentId)`）+ `runAttempt` 重跑一次。retry 進入點是 markDone() 之後，所以多一步 `sessionDone = false` 讓 renderStatus 重新 active。retry 再拋 `TransientRunError` → `maybeSelfRestart()`（保險，防 process 級壞 state）再 fall-through 到 finalError handler。**誤診教訓**：升 1.0.23 前 content-block 長得跟 transient 一模一樣（`result: undefined`），別再用舊 log 推斷 — 先看 `error.message`。
 - **殭屍 active run → `local.force`**：process 被砍（pm2 delete/restart mid-run）後，Cursor persisted state 會留著 active run，之後 resume + `agent.send()` 拋 `UnknownAgentError: ... already has active run`，該 channel 永久卡死。修法：`agent.send(prompt, { local: { force: true } })` 先 expire 殘留 run（SDK typedef 明寫這是 crashed-process recovery path）。bot 的 sessions map 已保證 per-channel 序列化，send 時的 active run 必為殭屍，所以永遠帶 force 是安全的。

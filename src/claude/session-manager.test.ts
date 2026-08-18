@@ -49,6 +49,7 @@ import {
   parseApiError,
   isConnectError,
   isTransientRunFailure,
+  isStaleAuthRunError,
 } from "./session-manager.js";
 
 function mockChannel(id: string) {
@@ -353,6 +354,63 @@ describe("isTransientRunFailure", () => {
         0,
       ),
     ).toBe(false);
+  });
+
+  it("returns true for the backend stale-auth error text", () => {
+    expect(
+      isTransientRunFailure(
+        {
+          ...base,
+          status: "error",
+          error: {
+            message:
+              "Authentication error If you are logged in, try logging out and back in.",
+          },
+          durationMs: 2_215,
+        },
+        0,
+      ),
+    ).toBe(true);
+  });
+
+  it("returns false for stale-auth text once tool calls were observed", () => {
+    expect(
+      isTransientRunFailure(
+        {
+          ...base,
+          status: "error",
+          error: { message: "Authentication error" },
+          durationMs: 2_215,
+        },
+        2,
+      ),
+    ).toBe(false);
+  });
+});
+
+describe("isStaleAuthRunError", () => {
+  const base = { id: "r", status: "error", model: { id: "composer-2" } } as any;
+
+  it("matches the backend text case-insensitively", () => {
+    expect(
+      isStaleAuthRunError({
+        ...base,
+        error: {
+          message:
+            "Authentication error If you are logged in, try logging out and back in.",
+        },
+      }),
+    ).toBe(true);
+  });
+
+  it("does not match unrelated error text", () => {
+    expect(
+      isStaleAuthRunError({ ...base, error: { message: "Request blocked" } }),
+    ).toBe(false);
+  });
+
+  it("does not match when there is no error text at all", () => {
+    expect(isStaleAuthRunError({ ...base })).toBe(false);
   });
 });
 

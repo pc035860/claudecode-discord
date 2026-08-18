@@ -127,18 +127,29 @@ export function runErrorText(final: RunResult): string | undefined {
   return final.result || final.error?.message || undefined;
 }
 
+// Server-side auth text seen when this process\'s SDK client state has gone
+// stale (observed on a 5-day-old process while a fresh process succeeded on
+// the same key/model/cwd at the same moment). The string is not produced by
+// @cursor/sdk — it comes verbatim from the Cursor backend.
+const STALE_AUTH_ERROR_REGEX = /authentication error/i;
+
+export function isStaleAuthRunError(final: RunResult): boolean {
+  const text = runErrorText(final);
+  return text !== undefined && STALE_AUTH_ERROR_REGEX.test(text);
+}
+
 export function isTransientRunFailure(
   final: RunResult,
   toolCallsObserved: number,
 ): boolean {
-  // Any server-provided error text (result or error.message, e.g. provider
-  // content moderation "Request blocked") is fatal — retrying replays the
-  // same rejection. Only errors with no explanation AND no tool_call events
-  // streamed qualify as transient: the server never reached tool execution,
-  // so replaying the prompt cannot duplicate side effects.
-  return (
-    final.status === "error" && !runErrorText(final) && toolCallsObserved === 0
-  );
+  // A tool_call event means the server reached tool execution, so replaying
+  // the prompt could duplicate side effects — never transient.
+  if (final.status !== "error" || toolCallsObserved !== 0) return false;
+  // Any other server-provided error text (result or error.message, e.g.
+  // provider content moderation "Request blocked") is fatal — retrying
+  // replays the same rejection. The stale-auth text is the one exception:
+  // it is a process-state failure, and a fresh client succeeds.
+  return !runErrorText(final) || isStaleAuthRunError(final);
 }
 
 export class TransientRunError extends Error {
