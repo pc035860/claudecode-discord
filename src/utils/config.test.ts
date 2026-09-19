@@ -44,7 +44,7 @@ describe("config", () => {
     expect(config.RATE_LIMIT_PER_MINUTE).toBe(10);
     expect(config.SHOW_COST).toBe(true);
     expect(config.PI_MODEL).toBe(
-      "openrouter/meta/muse-spark-1.3-contributor:medium",
+      "accounts/fireworks/models/glm-5p3-flash:medium",
     );
     expect(config.THREAD_PROGRESS).toBe(false);
   });

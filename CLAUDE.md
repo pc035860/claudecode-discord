@@ -24,11 +24,11 @@ pm2 stop claudecode-discord      # 停止
 npm run build && pm2 restart claudecode-discord
 ```
 
-**環境變數變動時** 用 `pm2 delete + start`（`pm2 restart` 不會 reload `.env`）：
+**環境變數變動時** 用 `pm2 delete + start`（`pm2 restart` 不會 reload `.env`），且下指令的 shell 必須沒有 export 同名變數（`env -u PI_MODEL pm2 start ...`）：pm2 會把 CLI shell 的 env 繼承給子行程，而 dotenv 不覆蓋已存在的變數——shell 裡 export 過的舊值會讓 `.env` 被無聲無視（2026-09-19 實測：改 `.env` 後 boot 仍是舊模型）。改完用 `pm2 logs` 確認 `Bot model resolved` 行：
 
 ```bash
-pm2 delete claudecode-discord
-pm2 start dist/index.js --name claudecode-discord
+env -u PI_MODEL pm2 delete claudecode-discord
+env -u PI_MODEL pm2 start dist/index.js --name claudecode-discord
 pm2 save
 ```
 
@@ -41,7 +41,7 @@ pm2 save
 
 ## 必要環境變數
 
-- `PI_MODEL`（選用，預設 `openrouter/meta/muse-spark-1.3-contributor:medium` — pi CLI 格式 `provider/id[:thinkingLevel]`，`:level` 必帶否則 fallback 到 `~/.pi/agent/settings.json` 的 defaultThinkingLevel）
+- `PI_MODEL`（選用，預設 `accounts/fireworks/models/glm-5p3-flash:medium` — pi CLI 格式 `provider/id[:thinkingLevel]`，`:level` 必帶否則 fallback 到 `~/.pi/agent/settings.json` 的 defaultThinkingLevel）
 - Auth 不走 env：`ModelRuntime.create()` 預設讀 `~/.pi/agent/auth.json` + `models.json`
 
 ## Bot Commands

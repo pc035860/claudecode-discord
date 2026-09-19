@@ -65,7 +65,7 @@ Discord isn't just a chat app — it's a surprisingly perfect fit for controllin
 - 🔄 Session resume across bot restarts (per-project session files via `SessionManager.list`)
 - ⏱️ Real-time progress display (tool usage, elapsed time)
 - 🧵 **Thread progress** — auto-created Discord thread with live tool calls and assistant text streaming
-- ⚙️ **Configurable model** — set `PI_MODEL` (default `openrouter/meta/muse-spark-1.3-contributor:medium`) in `.env`; `/models` lists available models
+- ⚙️ **Configurable model** — set `PI_MODEL` (default `accounts/fireworks/models/glm-5p3-flash:medium`) in `.env`; `/models` lists available models
 - 🔒 User whitelist, rate limiting, path security
 
 > **Trimmed features** (vs the original Claude Code SDK build): per-tool interactive approval (runs in full-allow mode), `/auto-approve`, `/last`, `/clear-sessions`, `/output-styles`. Restored in the Pi build: `/rename-session`, `/sessions` preview + delete, real cost display.

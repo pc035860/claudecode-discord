@@ -14,7 +14,7 @@ vi.mock("../db/database.js", () => ({
 vi.mock("../utils/config.js", () => ({
   getConfig: vi.fn(() => ({
     SHOW_COST: true,
-    PI_MODEL: "openrouter/meta/muse-spark-1.3-contributor:medium",
+    PI_MODEL: "accounts/fireworks/models/glm-5p3-flash:medium",
     THREAD_PROGRESS: false,
   })),
 }));
