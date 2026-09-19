@@ -1,9 +1,7 @@
 import "dotenv/config";
 import fs from "node:fs";
 import path from "node:path";
-import { Code, ConnectError } from "@connectrpc/connect";
 import { loadConfig } from "./utils/config.js";
-import { maybeSelfRestart } from "./utils/self-heal.js";
 import { initDatabase } from "./db/database.js";
 import { startBot } from "./bot/client.js";
 
@@ -50,24 +48,7 @@ async function main() {
 
   // Global error handlers — prevent silent hangs from unhandled errors
   process.on("unhandledRejection", (reason) => {
-    const isConnectErr =
-      reason instanceof ConnectError ||
-      (reason instanceof Error && reason.name === "ConnectError");
-    if (isConnectErr) {
-      const code = (reason as { code?: unknown }).code;
-      console.error(
-        "[unhandledRejection] ConnectError (likely Cursor SDK internal stream reject):",
-        { code, message: (reason as Error).message },
-      );
-      console.error(
-        `[unhandledRejection] BOT MAY BE IN A BAD STATE. If users report repeated [${String(code)}] errors, please restart the bot process.`,
-      );
-      if (code === Code.Unauthenticated) {
-        maybeSelfRestart();
-      }
-    } else {
-      console.error("[unhandledRejection]", reason);
-    }
+    console.error("[unhandledRejection]", reason);
   });
   process.on("uncaughtException", (error) => {
     console.error("Uncaught exception:", error);
@@ -79,6 +60,16 @@ async function main() {
   // Load and validate config
   loadConfig();
   console.log("Config loaded");
+
+  // Fail fast on an unresolvable PI_MODEL instead of erroring per message.
+  const { getBotModel } = await import("./claude/session-manager.js");
+  try {
+    const model = await getBotModel();
+    console.log(`Bot model resolved: ${(model as { id?: string })?.id}`);
+  } catch (e) {
+    console.error("Cannot resolve PI_MODEL:", e instanceof Error ? e.message : e);
+    process.exit(1);
+  }
 
   // Initialize database
   initDatabase();

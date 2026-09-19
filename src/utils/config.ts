@@ -13,34 +13,17 @@ const envSchema = z.object({
     .enum(["true", "false"])
     .default("true")
     .transform((v) => v === "true"),
-  CURSOR_API_KEY: z.string().min(1, "CURSOR_API_KEY is required"),
-  CURSOR_MODEL: z.string().default("composer-2"),
-  CURSOR_MODEL_PARAMS: z
+  // Pi Agent SDK model spec in pi CLI format: "provider/model-id[:thinkingLevel]"
+  // e.g. "openrouter/meta/muse-spark-1.3-contributor:medium". The :level
+  // suffix is required — without it the session falls back to the user's
+  // ~/.pi/agent/settings.json defaultThinkingLevel. Auth comes from
+  // ~/.pi/agent/auth.json via ModelRuntime (no env key needed).
+  PI_MODEL: z
     .string()
-    .optional()
-    .transform((v, ctx) => {
-      if (!v || v.trim() === "") return undefined;
-      const schema = z.array(
-        z.object({ id: z.string(), value: z.string() }),
-      );
-      try {
-        return schema.parse(JSON.parse(v));
-      } catch {
-        ctx.addIssue({
-          code: "custom",
-          message:
-            'CURSOR_MODEL_PARAMS must be a JSON array of {id,value} objects, e.g. \'[{"id":"thinking","value":"high"}]\'',
-        });
-        return z.NEVER;
-      }
-    }),
+    .default("openrouter/meta/muse-spark-1.3-contributor:medium"),
   THREAD_PROGRESS: z
     .enum(["true", "false"])
     .default("false")
-    .transform((v) => v === "true"),
-  AUTO_RESTART_ON_AUTH_ERROR: z
-    .enum(["true", "false"])
-    .default("true")
     .transform((v) => v === "true"),
 });
 

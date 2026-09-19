@@ -22,6 +22,7 @@ import {
   getSession,
   updateSessionStatus,
   getAllSessions,
+  findChannelsBySessionFile,
 } from "./database.js";
 
 describe("database", () => {
@@ -78,26 +79,27 @@ describe("database", () => {
     });
 
     it("upsertSession + getSession", () => {
-      upsertSession("s1", "ch1", "cursor-agent-1", "online");
+      upsertSession("s1", "ch1", "/sessions/abc.jsonl", "online");
       const session = getSession("ch1");
       expect(session).toBeDefined();
-      expect(session!.agent_id).toBe("cursor-agent-1");
+      expect(session!.pi_session_file).toBe("/sessions/abc.jsonl");
       expect(session!.session_id).toBeNull();
+      expect(session!.agent_id).toBeNull();
       expect(session!.status).toBe("online");
     });
 
     it("upsertSession replaces existing session with same id", () => {
       upsertSession("s1", "ch1", null, "online");
-      upsertSession("s1", "ch1", "cursor-agent-1", "idle");
+      upsertSession("s1", "ch1", "/sessions/abc.jsonl", "idle");
       const session = getSession("ch1");
-      expect(session!.agent_id).toBe("cursor-agent-1");
+      expect(session!.pi_session_file).toBe("/sessions/abc.jsonl");
       expect(session!.status).toBe("idle");
     });
 
-    it("upsertSession with null agentId", () => {
+    it("upsertSession with null sessionFile", () => {
       upsertSession("s1", "ch1", null, "online");
       const session = getSession("ch1");
-      expect(session!.agent_id).toBeNull();
+      expect(session!.pi_session_file).toBeNull();
     });
 
     it("updateSessionStatus changes status", () => {
@@ -118,6 +120,20 @@ describe("database", () => {
     it("getAllSessions returns empty for guild with no sessions", () => {
       registerProject("ch2", "/p2", "guild2");
       expect(getAllSessions("guild2")).toHaveLength(0);
+    });
+
+    it("findChannelsBySessionFile returns linking channels", () => {
+      registerProject("ch1", "/p1", "guild1");
+      registerProject("ch2", "/p2", "guild1");
+      registerProject("ch3", "/p3", "guild1");
+      upsertSession("s1", "ch1", "/sessions/a.jsonl", "idle");
+      upsertSession("s2", "ch2", "/sessions/a.jsonl", "idle");
+      upsertSession("s3", "ch3", "/sessions/b.jsonl", "idle");
+      expect(findChannelsBySessionFile("/sessions/a.jsonl").sort()).toEqual([
+        "ch1",
+        "ch2",
+      ]);
+      expect(findChannelsBySessionFile("/sessions/missing.jsonl")).toEqual([]);
     });
   });
 });

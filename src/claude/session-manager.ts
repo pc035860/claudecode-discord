@@ -1,11 +1,14 @@
 import {
-  Agent,
-  type LocalAgentOptions,
-  type Run,
-  type RunResult,
-  type SDKAgent,
-} from "@cursor/sdk";
-import { Code, ConnectError } from "@connectrpc/connect";
+  createAgentSession,
+  DefaultResourceLoader,
+  getAgentDir,
+  ModelRuntime,
+  SessionManager as PiSessionManager,
+  resolveCliModel,
+  type AgentSession,
+  type AgentSessionEvent,
+  type ResolveCliModelResult,
+} from "@earendil-works/pi-coding-agent";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
@@ -17,8 +20,8 @@ import {
   getProject,
   getSession,
 } from "../db/database.js";
+import type { SessionStatus } from "../db/types.js";
 import { getConfig } from "../utils/config.js";
-import { maybeSelfRestart, isRestartScheduled } from "../utils/self-heal.js";
 import { L } from "../utils/i18n.js";
 import { ThreadReporter } from "./thread-reporter.js";
 import {
@@ -45,162 +48,120 @@ const BOT_RULES = (() => {
     }
   }
   console.warn(
-    `[bot-rules] rules/BOT.md not found in candidates: ${candidates.join(", ")} — outbound [ATTACH:] convention will not be taught to fresh sessions.`,
+    `[bot-rules] rules/BOT.md not found in candidates: ${candidates.join(", ")} — outbound [ATTACH:] convention will not be taught via system prompt.`,
   );
   return "";
 })();
 
 interface ActiveSession {
-  agent: SDKAgent | null;
-  run: Run | null;
+  session: AgentSession | null;
   channelId: string;
-  agentId: string | null;
+  sessionFile: string | null;
   dbId: string;
   cancelRequested: boolean;
 }
 
+// Pi built-ins enabled for the bot. Default would be read/bash/edit/write;
+// grep/find/ls restore parity with what the Cursor engine offered.
+const BOT_TOOLS = ["read", "bash", "edit", "write", "grep", "find", "ls"];
+
 // Thunks so L() reads .tray-lang at call time (live language switch).
 const TOOL_LABELS: Record<string, () => string> = {
   read: () => L("Reading files", "파일 읽는 중"),
-  ls: () => L("Listing files", "파일 목록 보기"),
-  glob: () => L("Searching files", "파일 검색 중"),
-  grep: () => L("Searching code", "코드 검색 중"),
-  write: () => L("Writing file", "파일 작성 중"),
+  bash: () => L("Running command", "명령어 실행 중"),
   edit: () => L("Editing file", "파일 편집 중"),
-  shell: () => L("Running command", "명령어 실행 중"),
-  semSearch: () => L("Semantic search", "의미 검색 중"),
-  task: () => L("Spawning subagent", "서브에이전트 시작 중"),
-  mcp: () => L("Calling MCP tool", "MCP 도구 호출 중"),
+  write: () => L("Writing file", "파일 작성 중"),
+  grep: () => L("Searching code", "코드 검색 중"),
+  find: () => L("Searching files", "파일 검색 중"),
+  ls: () => L("Listing files", "파일 목록 보기"),
 };
 
-export function formatToolDetail(name: string, input: Record<string, unknown>): string {
-  // Cursor tools: shell, edit, read, write, glob, grep, ls, semSearch, task, mcp
-  if (name === "task" && typeof input.description === "string") {
-    const type = typeof input.subagent_type === "string" ? `[${input.subagent_type}] ` : "";
-    return `${type}${input.description.slice(0, 80)}`;
-  }
+export function formatToolDetail(_name: string, input: Record<string, unknown>): string {
   if (typeof input.command === "string") return `\`${input.command.slice(0, 100)}\``;
   if (typeof input.pattern === "string") {
     const pathSuffix = typeof input.path === "string" ? ` in \`${input.path}\`` : "";
     return `\`${input.pattern}\`${pathSuffix}`;
   }
-  if (typeof input.file_path === "string") return `\`${input.file_path}\``;
   if (typeof input.path === "string") return `\`${input.path}\``;
-  if (typeof input.query === "string") return `"${input.query.slice(0, 80)}"`;
   if (typeof input.url === "string") return `${input.url.slice(0, 120)}`;
   if (typeof input.description === "string") return `${input.description.slice(0, 80)}`;
   return "";
 }
 
-const CONNECT_ERROR_REGEX = /^(?:ConnectError:\s*)?\[([a-z_]+)\]\s*(.*)$/is;
-const RETRYABLE_CONNECT_CODES = new Set([
-  "unavailable",
-  "deadline_exceeded",
-  "aborted",
-]);
+// --- Shared Pi runtime (process-wide) ---
+
+let modelRuntime: ModelRuntime | null = null;
+let botModelSpec: ResolveCliModelResult | null = null;
+const loaderCache = new Map<string, DefaultResourceLoader>();
+
+async function getModelRuntime(): Promise<ModelRuntime> {
+  if (!modelRuntime) {
+    // Default paths: ~/.pi/agent/auth.json + models.json. No env keys needed.
+    modelRuntime = await ModelRuntime.create();
+  }
+  return modelRuntime;
+}
+
+export async function getBotModel(): Promise<NonNullable<ResolveCliModelResult["model"]>> {
+  if (!botModelSpec) {
+    const runtime = await getModelRuntime();
+    const resolved = resolveCliModel({
+      cliModel: getConfig().PI_MODEL,
+      modelRuntime: runtime,
+    });
+    if (resolved.error || !resolved.model) {
+      throw new Error(
+        `Cannot resolve PI_MODEL "${getConfig().PI_MODEL}": ${resolved.error ?? "unknown model"}`,
+      );
+    }
+    if (resolved.warning) console.warn(`[model] ${resolved.warning}`);
+    botModelSpec = resolved;
+  }
+  return botModelSpec.model as NonNullable<ResolveCliModelResult["model"]>;
+}
+
+export async function getResourceLoader(cwd: string): Promise<DefaultResourceLoader> {
+  const key = fs.realpathSync(cwd);
+  const cached = loaderCache.get(key);
+  if (cached) return cached;
+  const loader = new DefaultResourceLoader({
+    cwd,
+    agentDir: getAgentDir(),
+    ...(BOT_RULES ? { systemPromptOverride: () => BOT_RULES } : {}),
+  });
+  await loader.reload();
+  loaderCache.set(key, loader);
+  return loader;
+}
+
+export function getPiModelRuntime(): Promise<ModelRuntime> {
+  return getModelRuntime();
+}
+
+// AgentMessage is not exported by the SDK, so walk message content structurally.
+export function extractAssistantText(messages: readonly unknown[]): string {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i] as { role?: unknown; content?: unknown };
+    if (m.role !== "assistant" || !Array.isArray(m.content)) continue;
+    const text = m.content
+      .filter(
+        (b): b is { type: string; text: string } =>
+          typeof b === "object" &&
+          b !== null &&
+          (b as { type?: unknown }).type === "text" &&
+          typeof (b as { text?: unknown }).text === "string",
+      )
+      .map((b) => b.text)
+      .join("\n");
+    if (text.trim()) return text;
+  }
+  return "";
+}
+
 const MAX_RAW_ERROR_LEN = 200;
 const ERROR_PREVIEW_LEN = 80;
 
-export function isConnectError(
-  err: unknown,
-): err is Error & { code?: unknown; rawMessage?: unknown } {
-  return (
-    err instanceof ConnectError ||
-    (err instanceof Error && err.name === "ConnectError")
-  );
-}
-
-function shouldRetryAuth(
-  err: unknown,
-  state: { cancelled: boolean; runStarted: boolean },
-): boolean {
-  return (
-    isConnectError(err) &&
-    err.code === Code.Unauthenticated &&
-    !isRestartScheduled() &&
-    !state.cancelled &&
-    !state.runStarted
-  );
-}
-
-export function runErrorText(final: RunResult): string | undefined {
-  return final.result || final.error?.message || undefined;
-}
-
-// Server-side auth text seen when this process\'s SDK client state has gone
-// stale (observed on a 5-day-old process while a fresh process succeeded on
-// the same key/model/cwd at the same moment). The string is not produced by
-// @cursor/sdk — it comes verbatim from the Cursor backend.
-const STALE_AUTH_ERROR_REGEX = /authentication error/i;
-
-export function isStaleAuthRunError(final: RunResult): boolean {
-  const text = runErrorText(final);
-  return text !== undefined && STALE_AUTH_ERROR_REGEX.test(text);
-}
-
-export function isTransientRunFailure(
-  final: RunResult,
-  toolCallsObserved: number,
-): boolean {
-  // A tool_call event means the server reached tool execution, so replaying
-  // the prompt could duplicate side effects — never transient.
-  if (final.status !== "error" || toolCallsObserved !== 0) return false;
-  // Any other server-provided error text (result or error.message, e.g.
-  // provider content moderation "Request blocked") is fatal — retrying
-  // replays the same rejection. The stale-auth text is the one exception:
-  // it is a process-state failure, and a fresh client succeeds.
-  return !runErrorText(final) || isStaleAuthRunError(final);
-}
-
-export class TransientRunError extends Error {
-  readonly final: RunResult;
-  constructor(final: RunResult) {
-    super(
-      `Cursor run ended with transient error (id=${final.id}, durationMs=${final.durationMs ?? "?"})`,
-    );
-    this.name = "TransientRunError";
-    this.final = final;
-  }
-}
-
-function formatConnectErrorMessage(code: string): string {
-  if (code === "unauthenticated") {
-    return L(
-      `❌ Authentication broken — the bot's API connection has been corrupted. Please contact the admin to restart the bot. (code: ${code})`,
-      `❌ 인증 오류 — 봇의 API 연결이 손상되었습니다. 관리자에게 봇 재시작을 요청해주세요. (code: ${code})`,
-    );
-  }
-  if (RETRYABLE_CONNECT_CODES.has(code)) {
-    return L(
-      `⚠️ Cursor service temporarily unavailable. Please try again in a moment. (code: ${code})`,
-      `⚠️ Cursor 서비스에 일시적으로 연결할 수 없습니다. 잠시 후 다시 시도하세요. (code: ${code})`,
-    );
-  }
-  return L(
-    `❌ Connection error from Cursor SDK (code: ${code}). If this keeps happening, please contact the admin to restart the bot.`,
-    `❌ Cursor SDK 연결 오류 (code: ${code}). 계속 발생하면 관리자에게 봇 재시작을 요청하세요.`,
-  );
-}
-
 export function parseApiError(rawMsg: string): string {
-  const ceMatch = rawMsg.match(CONNECT_ERROR_REGEX);
-  if (ceMatch) {
-    return formatConnectErrorMessage(ceMatch[1].toLowerCase());
-  }
-
-  const jsonMatch = rawMsg.match(/API Error: (\d+)\s*(\{.*\})/s);
-  if (jsonMatch) {
-    try {
-      const parsed = JSON.parse(jsonMatch[2]);
-      const statusCode = jsonMatch[1];
-      const message = parsed?.error?.message ?? parsed?.message ?? "Unknown error";
-      return `API Error ${statusCode}: ${message}. Please try again later.`;
-    } catch {
-      return `API Error ${jsonMatch[1]}. Please try again later.`;
-    }
-  } else if (rawMsg.includes("process exited with code")) {
-    return `${rawMsg}. The server may be temporarily unavailable — please try again later.`;
-  }
   if (rawMsg.length >= MAX_RAW_ERROR_LEN || rawMsg.includes("\n")) {
     const firstLine = rawMsg.split("\n")[0].slice(0, ERROR_PREVIEW_LEN);
     return L(
@@ -212,6 +173,15 @@ export function parseApiError(rawMsg: string): string {
 }
 
 class SessionManager {
+  // Terminal status writes go through here: a /stop + immediate new
+  // message can start a replacement run while this run's tail is still
+  // in flight, and an unguarded write would stomp the new run's status.
+  private setStatusIfCurrent(ph: ActiveSession, status: SessionStatus): void {
+    if (this.sessions.get(ph.channelId) === ph) {
+      updateSessionStatus(ph.channelId, status);
+    }
+  }
+
   private sessions = new Map<string, ActiveSession>();
   private static readonly MAX_QUEUE_SIZE = 5;
   private messageQueue = new Map<string, { channel: TextChannel; prompt: string }[]>();
@@ -225,9 +195,9 @@ class SessionManager {
     const existingSession = this.sessions.get(channelId);
     const dbSession = !existingSession ? getSession(channelId) : undefined;
     const dbId = existingSession?.dbId ?? dbSession?.id ?? randomUUID();
-    const resumeAgentId = existingSession?.agentId ?? dbSession?.agent_id ?? null;
+    const resumeFile = existingSession?.sessionFile ?? dbSession?.pi_session_file ?? null;
 
-    upsertSession(dbId, channelId, resumeAgentId, "online");
+    upsertSession(dbId, channelId, resumeFile, "online");
 
     const stopRow = createStopButton(channelId);
     const currentMessage = await channel.send({
@@ -280,173 +250,124 @@ class SessionManager {
       }
     };
 
-    // Reserve the channel slot BEFORE awaiting Agent.create / agent.send so
-    // a second message arriving in the same channel doesn't bypass isActive()
-    // and start a parallel run. agent/run remain null until each await
+    // Reserve the channel slot BEFORE awaiting session creation so a second
+    // message arriving in the same channel doesn't bypass isActive() and
+    // start a parallel run. session remains null until createAgentSession
     // resolves; stopSession() uses cancelRequested to handle the race.
     const placeholder: ActiveSession = {
-      agent: null,
-      run: null,
+      session: null,
       channelId,
-      agentId: resumeAgentId,
+      sessionFile: resumeFile,
       dbId,
       cancelRequested: false,
     };
     this.sessions.set(channelId, placeholder);
 
-    // No systemPrompt API in Cursor SDK — prepend on fresh only; resume relies
-    // on conversation history to retain the convention.
-    const augmentedPrompt =
-      !resumeAgentId && BOT_RULES
-        ? `${BOT_RULES}\n\n---\n\n${prompt}`
-        : prompt;
+    const runAttempt = async (): Promise<void> => {
+      // realpath: SessionManager dirs are encoded per cwd, so a symlinked
+      // path (e.g. macOS /tmp vs /private/tmp) would list/open the wrong
+      // session bucket.
+      const cwd = fs.realpathSync(project.project_path);
+      const runtime = await getModelRuntime();
+      const model = await getBotModel();
+      const loader = await getResourceLoader(cwd);
 
-    // One attempt: build → send → stream → wait → result. `resumeFrom` lets
-    // retry feed back placeholder.agentId after a first-attempt failure.
-    const runAttempt = async (resumeFrom: string | null): Promise<void> => {
-      // Cursor SDK local agents require an explicit model on every call —
-      // resume() does not inherit the model from the persisted agent record.
-      const modelSelection = {
-        id: config.CURSOR_MODEL,
-        ...(config.CURSOR_MODEL_PARAMS
-          ? { params: config.CURSOR_MODEL_PARAMS }
-          : {}),
-      };
-      const localOptions: LocalAgentOptions = {
-        cwd: project.project_path,
-        settingSources: ["all"],
-      };
-
-      let agent: SDKAgent;
-      if (resumeFrom) {
-        agent = await Agent.resume(resumeFrom, {
-          apiKey: config.CURSOR_API_KEY,
-          model: modelSelection,
-          local: localOptions,
-        });
-      } else {
-        agent = await Agent.create({
-          apiKey: config.CURSOR_API_KEY,
-          model: modelSelection,
-          local: localOptions,
-        });
-      }
-
-      placeholder.agent = agent;
-      placeholder.agentId = agent.agentId;
-      upsertSession(dbId, channelId, agent.agentId, "online");
-
-      // If user pressed Stop during Agent.create/resume, bail before send.
-      if (placeholder.cancelRequested) {
-        await markDone();
-        updateSessionStatus(channelId, "offline");
-        return;
-      }
-
-      // local.force expires any stale persisted run before sending. The bot's
-      // sessions map already serializes runs per channel, so an "active" run
-      // at send time can only be a leftover from a killed process (e.g. pm2
-      // delete/restart mid-run) — without force, agent.send throws
-      // "already has active run" and the channel wedges permanently.
-      const run = await agent.send(augmentedPrompt, {
-        local: { force: true },
+      const { session, modelFallbackMessage } = await createAgentSession({
+        cwd,
+        model,
+        thinkingLevel: botModelSpec?.thinkingLevel,
+        modelRuntime: runtime,
+        tools: BOT_TOOLS,
+        resourceLoader: loader,
+        sessionManager: resumeFile
+          ? PiSessionManager.open(resumeFile)
+          : PiSessionManager.create(cwd),
       });
-      placeholder.run = run;
+      if (modelFallbackMessage) {
+        console.warn(`[session] model fallback for ${channelId}: ${modelFallbackMessage}`);
+      }
 
-      // If user pressed Stop during agent.send, cancel immediately.
+      placeholder.session = session;
+
+      // If user pressed Stop during session creation, bail BEFORE the
+      // model pin and DB write — otherwise a stale "online" row lands
+      // after stopSession() already marked the channel offline.
       if (placeholder.cancelRequested) {
-        try {
-          await run.cancel();
-        } catch {
-          // ignore
-        }
         await markDone();
-        updateSessionStatus(channelId, "offline");
+        this.setStatusIfCurrent(placeholder, "offline");
         return;
       }
 
-      for await (const event of run.stream()) {
-        if (placeholder.cancelRequested) break;
+      if (resumeFile) {
+        // Pin the bot default model — the session file may record a
+        // different model from a local pi CLI run. Predictable billing
+        // over session fidelity.
+        await session.setModel(model);
+      }
+      placeholder.sessionFile = session.sessionFile ?? null;
+      upsertSession(dbId, channelId, placeholder.sessionFile, "online");
 
-        if (
-          event.type === "system" &&
-          event.subtype === "init" &&
-          event.agent_id &&
-          event.agent_id !== placeholder.agentId
-        ) {
-          // Defensive: if init reports a different agent_id than Agent.create
-          // gave us, reconcile. In normal flow these match and we skip writes.
-          placeholder.agentId = event.agent_id;
-          upsertSession(dbId, channelId, event.agent_id, "online");
-        }
+      const unsubscribe = session.subscribe((event: AgentSessionEvent) => {
+        if (placeholder.cancelRequested) return;
 
-        // Assistant text events stream incrementally — keep them in the
-        // thread (progress view) only. The final embed will carry the full
-        // text once via run.wait().result, so we don't edit it into the
-        // main Discord message piece-by-piece.
-        if (event.type === "assistant" && event.message?.content) {
-          for (const block of event.message.content) {
-            if (block.type === "text" && block.text) {
-              threadReporter?.pushText(block.text);
-            }
+        // Assistant text streams incrementally — keep it in the thread
+        // (progress view) only. The final embed carries the full text once
+        // from session.messages, so we don't edit it into the main
+        // Discord message piece-by-piece.
+        if (event.type === "message_update") {
+          const inner = (event as { assistantMessageEvent?: { type?: string; delta?: string } })
+            .assistantMessageEvent;
+          if (inner?.type === "text_delta" && inner.delta) {
+            threadReporter?.pushText(inner.delta);
           }
+          return;
         }
 
-        if (event.type === "tool_call" && event.status === "running") {
+        if (event.type === "tool_execution_start") {
           toolUseCount++;
-          const input = (event.args ?? {}) as Record<string, unknown>;
-          const detail = formatToolDetail(event.name, input);
-          threadReporter?.pushTool(event.name, detail);
+          const ev = event as { toolName: string; args?: Record<string, unknown> };
+          const input = (ev.args ?? {}) as Record<string, unknown>;
+          const detail = formatToolDetail(ev.toolName, input);
+          threadReporter?.pushTool(ev.toolName, detail);
 
-          const filePath = typeof input.file_path === "string"
-            ? input.file_path
-            : typeof input.path === "string"
-            ? input.path
-            : null;
+          const filePath =
+            typeof input.path === "string" ? input.path : null;
           const fileSuffix = filePath ? ` \`${filePath.split(/[\\/]/).pop()}\`` : "";
-          const label = TOOL_LABELS[event.name]?.() ?? `Using ${event.name}`;
+          const label = TOOL_LABELS[ev.toolName]?.() ?? `Using ${ev.toolName}`;
           lastActivity = `${label}${fileSuffix}`;
-          await renderStatus();
+          void renderStatus();
         }
+      });
+
+      let costBefore: number | null = null;
+      try {
+        costBefore = session.getSessionStats().cost ?? 0;
+      } catch {
+        // Stats snapshot failed — report 0 below rather than risking the
+        // whole session's cumulative cost masquerading as this run's.
+        costBefore = null;
       }
 
-      const final = await run.wait();
+      try {
+        await session.prompt(prompt);
+      } catch (e) {
+        // session.abort() (via /stop) rejects the in-flight prompt —
+        // that's the user-cancel path, not an error.
+        if (!placeholder.cancelRequested) throw e;
+      } finally {
+        unsubscribe();
+      }
+
+      if (placeholder.cancelRequested) {
+        await markDone();
+        this.setStatusIfCurrent(placeholder, "offline");
+        return;
+      }
 
       await markDone();
 
-      if (final.status === "cancelled") {
-        // /stop already updated the message + status to offline; skip the
-        // success embed and don't overwrite the offline marker.
-        return;
-      }
-
-      if (final.status === "error") {
-        console.error(`[sendMessage] Cursor run errored for channel ${channelId}:`, {
-          runId: final.id,
-          result: final.result,
-          error: final.error,
-          durationMs: final.durationMs,
-          model: final.model,
-          git: final.git,
-        });
-        // Heuristic: no server-provided error text + no tool_call events
-        // observed means the failure happened before tool execution started
-        // (transient backend/transport hiccup). Throw so the outer catch can
-        // retry once. Fatal errors (with result text, or tools already run)
-        // fall through to the user-facing ❌ path.
-        if (
-          isTransientRunFailure(final, toolUseCount) &&
-          !placeholder.cancelRequested
-        ) {
-          throw new TransientRunError(final);
-        }
-        const errText = runErrorText(final) || L("Run ended with an error", "런이 오류로 종료되었습니다");
-        await channel.send(`❌ ${errText}`);
-        updateSessionStatus(channelId, "offline");
-        return;
-      }
-
-      const resultText = final.result || L("Task completed", "작업 완료");
+      const resultText =
+        extractAssistantText(session.messages) || L("Task completed", "작업 완료");
       const { cleanText, attachmentPaths } = extractAttachments(resultText);
 
       if (attachmentPaths.length > 0) {
@@ -462,10 +383,22 @@ class SessionManager {
         });
       }
 
+      // Per-run cost = session total delta across this prompt. The stats
+      // API only exposes cumulative totals, so diff against the snapshot.
+      let costUsd = 0;
+      try {
+        costUsd =
+          costBefore === null
+            ? 0
+            : Math.max(0, (session.getSessionStats().cost ?? 0) - costBefore);
+      } catch (e) {
+        console.warn(`[stats] getSessionStats failed for ${channelId}:`, e instanceof Error ? e.message : e);
+      }
+
       const resultEmbed = createResultEmbed(
         cleanText,
-        0,
-        final.durationMs ?? Date.now() - startTime,
+        costUsd,
+        Date.now() - startTime,
         config.SHOW_COST,
       );
       try {
@@ -474,105 +407,27 @@ class SessionManager {
         console.warn(`[result] Failed to send result embed for ${channelId}:`, e instanceof Error ? e.message : e);
       }
 
-      updateSessionStatus(channelId, "idle");
+      this.setStatusIfCurrent(placeholder, "idle");
     };
 
     try {
-      await runAttempt(resumeAgentId);
+      await runAttempt();
     } catch (error) {
-      let finalError: unknown = error;
-      // Skip retry once a Run is in flight — the server may have begun
-      // executing tools, and re-sending the prompt could duplicate side effects.
-      const canRetry = shouldRetryAuth(error, {
-        cancelled: placeholder.cancelRequested,
-        runStarted: placeholder.run !== null,
-      });
-      if (canRetry) {
-        console.warn(
-          `[self-heal] code-16 on attempt 1 for ${channelId}, agentId=${placeholder.agentId ?? "<none>"}, retrying in-process...`,
-        );
-        // Drop the broken handle synchronously — async dispose would route
-        // through the same broken transport and may hang.
-        try {
-          placeholder.agent?.close();
-        } catch {
-          // ignore — handle already broken
-        }
-        placeholder.agent = null;
-        placeholder.run = null;
-        // Reset UI state so the next renderStatus() writes through; keep
-        // currentMessage / heartbeat / threadReporter / startTime intact.
-        toolUseCount = 0;
-        lastStatusContent = "";
-        lastActivity = L("Reconnecting...", "재연결 중...");
-        try {
-          await runAttempt(placeholder.agentId ?? resumeAgentId);
-          console.info(`[self-heal] in-process retry succeeded for ${channelId}`);
-          return;
-        } catch (retryError) {
-          console.error(
-            `[self-heal] in-process retry also failed for ${channelId}, delegating to error handler:`,
-            retryError instanceof Error ? retryError.message : retryError,
-          );
-          finalError = retryError;
-        }
-      } else if (error instanceof TransientRunError && !placeholder.cancelRequested) {
-        // run.wait() returned status:"error" with no cause and a short
-        // durationMs — likely transient server-side failure that hadn't
-        // started tool execution. Re-resume the same agentId and replay
-        // the prompt once. Same cleanup pattern as the code-16 path.
-        sessionDone = false;
-        console.warn(
-          `[self-heal] transient run-end error on attempt 1 for ${channelId}, runId=${error.final.id}, durationMs=${error.final.durationMs}, retrying in-process...`,
-        );
-        try {
-          placeholder.agent?.close();
-        } catch {
-          // ignore — handle already broken
-        }
-        placeholder.agent = null;
-        placeholder.run = null;
-        toolUseCount = 0;
-        lastStatusContent = "";
-        lastActivity = L("Reconnecting...", "재연결 중...");
-        try {
-          await runAttempt(placeholder.agentId ?? resumeAgentId);
-          console.info(`[self-heal] transient retry succeeded for ${channelId}`);
-          return;
-        } catch (retryError) {
-          console.error(
-            `[self-heal] transient retry also failed for ${channelId}, delegating to error handler:`,
-            retryError instanceof Error ? retryError.message : retryError,
-          );
-          // Two transient failures in a row means the SDK client state in
-          // this process has gone bad (fresh-process spikes succeed on the
-          // same agent + prompt) — same failure class as code 16, so reuse
-          // the process-restart defense.
-          if (retryError instanceof TransientRunError) {
-            maybeSelfRestart();
-          }
-          finalError = retryError;
-        }
-      }
-      console.error(`[sendMessage] error for channel ${channelId}:`, finalError);
-      if (isConnectError(finalError)) {
-        console.error("[sendMessage] ConnectError detail:", {
-          code: finalError.code,
-          rawMessage: finalError.rawMessage,
-        });
-        if (finalError.code === Code.Unauthenticated) {
-          maybeSelfRestart();
-        }
-      }
-      const rawMsg = finalError instanceof Error ? finalError.message : "Unknown error occurred";
+      console.error(`[sendMessage] error for channel ${channelId}:`, error);
+      const rawMsg = error instanceof Error ? error.message : "Unknown error occurred";
       const errMsg = parseApiError(rawMsg);
       const display = /^[❌⚠️]/u.test(errMsg) ? errMsg : `❌ ${errMsg}`;
 
       await Promise.all([markDone(), channel.send(display)]);
-      updateSessionStatus(channelId, "offline");
+      this.setStatusIfCurrent(placeholder, "offline");
     } finally {
       clearInterval(heartbeatInterval);
       await threadReporter?.stop();
+      try {
+        placeholder.session?.dispose();
+      } catch {
+        // ignore — dispose is best-effort listener cleanup
+      }
       // Identity-check so a /stop + immediate new message doesn't have the
       // old run's finally tear down the new run's placeholder.
       if (this.sessions.get(channelId) === placeholder) {
@@ -580,20 +435,7 @@ class SessionManager {
       }
 
       const queue = this.messageQueue.get(channelId);
-      if (queue && queue.length > 0 && isRestartScheduled()) {
-        // A code-16 self-restart is pending. The in-memory queue won't survive
-        // the restart, and starting the next run now would just hit the same
-        // broken connection. Drop the queue and tell the user to resend.
-        this.messageQueue.delete(channelId);
-        channel
-          .send(
-            L(
-              "⚠️ Bot is restarting to recover the connection. Queued messages were cleared — please resend once it's back.",
-              "⚠️ 연결 복구를 위해 봇을 재시작합니다. 대기 중이던 메시지가 초기화되었으니 복구 후 다시 보내주세요.",
-            ),
-          )
-          .catch(() => {});
-      } else if (queue && queue.length > 0) {
+      if (queue && queue.length > 0) {
         const next = queue.shift()!;
         if (queue.length === 0) this.messageQueue.delete(channelId);
         const remaining = queue.length;
@@ -622,19 +464,25 @@ class SessionManager {
     if (!session) return false;
 
     // Mark cancel for the startup race — sendMessage checks this flag after
-    // each await so a Stop pressed before run is wired up still aborts.
+    // each await so a Stop pressed before the session is wired up still aborts.
     session.cancelRequested = true;
 
-    if (session.run) {
+    if (session.session) {
       try {
-        await session.run.cancel();
+        await session.session.abort();
       } catch {
         // already stopped
       }
     }
 
-    this.sessions.delete(channelId);
-    updateSessionStatus(channelId, "offline");
+    // Identity guard (mirrors setStatusIfCurrent): while abort() was in
+    // flight, the run's finally may have torn down this entry and started
+    // a queued replacement run. Only delete + mark offline when the entry
+    // is still the one we stopped — never a replacement run.
+    if (this.sessions.get(channelId) === session) {
+      this.sessions.delete(channelId);
+      updateSessionStatus(channelId, "offline");
+    }
     return true;
   }
 

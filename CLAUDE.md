@@ -1,6 +1,6 @@
 # CLAUDE.md - claudecode-discord
 
-> Migrated from `@anthropic-ai/claude-agent-sdk` to `@cursor/sdk` (~1.0.13). Discord bot now drives Cursor agents instead of Claude Code. Node ≥ 22 required.
+> Migrated from `@cursor/sdk` to `@earendil-works/pi-coding-agent` (^0.85.1). Discord bot now drives local Pi coding agents in-process. Node ≥ 22 required.
 
 ## 啟動方式
 
@@ -9,7 +9,7 @@
 ```bash
 # 首次註冊
 npm run build
-pm2 start dist/index.js --name claudecode-discord --cron-restart "0 6 * * *"
+pm2 start dist/index.js --name claudecode-discord
 pm2 save
 
 # 日常操作
@@ -28,9 +28,11 @@ npm run build && pm2 restart claudecode-discord
 
 ```bash
 pm2 delete claudecode-discord
-pm2 start dist/index.js --name claudecode-discord --cron-restart "0 6 * * *"
+pm2 start dist/index.js --name claudecode-discord
 pm2 save
 ```
+
+> Pi 版不再需要 `--cron-restart`（Cursor 時代用來重置爛掉的 SDK client state，本地引擎無此問題）。
 
 ## 設定文件
 
@@ -39,65 +41,64 @@ pm2 save
 
 ## 必要環境變數
 
-- `CURSOR_API_KEY` — Cursor SDK API key（從 Cursor Dashboard → Integrations 取得）
-- `CURSOR_MODEL`（選用，預設 `composer-2` — Cursor SDK 自動套用 `fast` parameter）
-- `CURSOR_MODEL_PARAMS`（選用，JSON array of `{id,value}`，例：`[{"id":"thinking","value":"high"}]`）
+- `PI_MODEL`（選用，預設 `openrouter/meta/muse-spark-1.3-contributor:medium` — pi CLI 格式 `provider/id[:thinkingLevel]`，`:level` 必帶否則 fallback 到 `~/.pi/agent/settings.json` 的 defaultThinkingLevel）
+- Auth 不走 env：`ModelRuntime.create()` 預設讀 `~/.pi/agent/auth.json` + `models.json`
 
 ## Bot Commands
 
 主要 slash commands (src/bot/commands/)：
-- `/new-session` — 快速建立新 Cursor agent session
-- `/sessions` — 列出並 resume 現有 Cursor agents（resume-only，不支援預覽 / 刪除）
+- `/new-session` — 快速建立新 Pi agent session
+- `/sessions` — 列出／resume／刪除該專案的 Pi sessions（含預覽：name + firstMessage + messageCount）
+- `/rename-session <name>` — 改名（`session.setSessionName()`）
 - `/register <path>` — 註冊 channel 到專案目錄
-- `/stop` — 停止當前 run（`run.cancel()`）
+- `/stop` — 停止當前 run（`session.abort()`）
 - `/status` — 列出所有頻道狀態
 - `/queue` — 管理排隊訊息
-- `/cursor-models` — 列出可用的 Cursor SDK 模型（呼叫 `Cursor.models.list()`）
+- `/models` — 列出可用模型（`modelRuntime.getAvailable()`，只顯示有認證的 provider）
 - `/usage` — Claude Code 配額顯示（與本 bot SDK 無關，獨立 OAuth）
 
-## Cursor SDK 整合
+## Pi SDK 整合
 
 `src/claude/session-manager.ts` 是核心：
 
 ```typescript
-const agent = resumeAgentId
-  ? await Agent.resume(resumeAgentId, { apiKey, local: { cwd, settingSources: ["all"] } })
-  : await Agent.create({
-      apiKey: config.CURSOR_API_KEY,
-      model: { id: config.CURSOR_MODEL, params: config.CURSOR_MODEL_PARAMS },
-      local: { cwd: project.project_path, settingSources: ["all"] },
-    });
-const run = await agent.send(prompt);
-for await (const event of run.stream()) { /* ... */ }
-const result = await run.wait();
+const runtime = await ModelRuntime.create(); // ~/.pi/agent/auth.json + models.json
+const { model, thinkingLevel } = resolveCliModel({ cliModel: config.PI_MODEL, modelRuntime });
+const { session } = await createAgentSession({
+  cwd, model, thinkingLevel, modelRuntime,
+  tools: ["read", "bash", "edit", "write", "grep", "find", "ls"],
+  resourceLoader, // DefaultResourceLoader + systemPromptOverride(BOT.md)
+  sessionManager: resumeFile ? SessionManager.open(resumeFile) : SessionManager.create(cwd),
+});
+if (resumeFile) await session.setModel(model); // resume 一律釘回 bot 預設 model
+session.subscribe((event) => { /* message_update / tool_execution_start */ });
+await session.prompt(prompt);
 ```
 
-- 兩步驟 API：`Agent.create()` → `agent.send()` → `run.stream()`
-- 中斷用 `run.cancel()`（取代舊的 `queryInstance.interrupt()`）
-- `local.settingSources: ["all"]` 載入 Cursor 全部設定層（user/project/team/mdm/plugins）
-- Agent id 儲存到 DB `sessions.agent_id` 欄位（legacy `session_id` 欄保留但不再使用）
+- 一步 API：`createAgentSession()` → `session.subscribe()` → `await session.prompt()`
+- 中斷用 `session.abort()`；prompt 被 abort 會 reject，靠 `cancelRequested` flag 區分 user-stop vs 真錯誤
+- Session 檔是 JSONL，落在 `~/.pi/agent/sessions/--<cwd編碼>--/`；DB `sessions.pi_session_file` 欄存路徑（legacy `session_id`、`agent_id` 保留但不再使用）
+- `ModelRuntime` / bot model / per-cwd loader 是 process-wide 單例（module-scope cache）
+- 跑完一定要 `session.dispose()`（listener 清理）；下次訊息重新 open 檔案即可
 
-## MVP 階段砍掉的功能
+## 功能狀態（Pi 版）
 
-對齊 Cursor SDK missing primitives，MVP 砍掉：
-- ❌ Per-tool 互動式核准（Cursor 沒有 `canUseTool` callback）— 走 full-allow
+Pi 版恢復了 Cursor MVP 砍掉的三項：`/rename-session`（`setSessionName`）、`/sessions` 預覽 + Delete（`SessionInfo` 自帶 firstMessage/messageCount，刪除即 unlink）、cost 顯示（`getSessionStats().cost` 真實金額）。
+
+仍維持修剪：
+- ❌ Per-tool 互動式核准 — 走 full-allow（但 SDK 的 extension `tool_call` event 有 `{ block, reason }` hook，未來可用 `extensionFactories` 接 tool-gating）
 - ❌ `/auto-approve` 指令、AskUserQuestion 互動 UI
-- ❌ `/rename-session` 指令（Cursor SDK 無 rename API）
-- ❌ `/last`、`/clear-sessions` 指令（依賴 Claude JSONL on-disk）
-- ❌ `/output-styles` 指令
-- ❌ `/sessions` 預覽 + Delete 按鈕（Cursor SQLite-backed，無 JSONL）
-
-未來若要重接：tool-gating 可走 `.cursor/hooks.json` 或 `permissions.json`。
+- ❌ `/last`、`/clear-sessions`、`/output-styles` 指令
 
 ## 附件上傳功能
 
-**Inbound**：使用者在 Discord 上傳的檔案會自動下載到 `<project>/.claude-uploads/`，並在 prompt 前綴 `[Attached images/files]` 提示 Cursor 用 `read` 工具讀取。
+**Inbound**：使用者在 Discord 上傳的檔案會自動下載到 `<project>/.claude-uploads/`，並在 prompt 前綴 `[Attached images/files]` 提示 agent 用 `read` 工具讀取。
 
 - 相關程式碼：`src/bot/handlers/message.ts`（`downloadAttachment`）
 - Bot 需要 Discord `Attach Files` 權限（見 SETUP.md）
 
-**Outbound `[ATTACH:]`**：Cursor agent 可在回應中寫 `[ATTACH: /絕對路徑]` 把產出的圖／檔送回 Discord。
-- 指令注入：`rules/BOT.md` 在 module load 讀進 `BOT_RULES` 常數，fresh session（`!resumeAgentId`）第一個 prompt 前 prepend。Cursor SDK 沒 `systemPrompt` API，resume 路徑相信 conversation history 留住慣例。
+**Outbound `[ATTACH:]`**：agent 可在回應中寫 `[ATTACH: /絕對路徑]` 把產出的圖／檔送回 Discord。
+- 指令注入：`rules/BOT.md` 在 module load 讀進 `BOT_RULES` 常數，經 `DefaultResourceLoader` 的 `systemPromptOverride` 注入（fresh + resume 全覆蓋，不再 prepend 到 prompt）。
 - 解析：`extractAttachments()` 在 `run.wait()` 後從最終文字撈路徑、產出 cleanText。
 - 上傳：`sendAttachments()` 在 result embed 前送出，含 whitelist（`/tmp`、`/private/tmp`、`project_path`，`fs.realpathSync` 防 symlink escape）+ dedupe + 10 個上限。
 - 相關程式碼：`src/claude/output-formatter.ts`、`src/claude/session-manager.ts`、`rules/BOT.md`
@@ -107,42 +108,36 @@ const result = await run.wait();
 設定 `THREAD_PROGRESS=true` 後，Bot 在 Thinking 訊息上開 Discord thread，輸出工具呼叫和 assistant 文字。Thread lazy creation。
 
 - 相關程式碼：`src/claude/thread-reporter.ts`（`ThreadReporter` class）
-- **文字來源**：Cursor `assistant` events 的 `TextBlock`
-- **工具來源**：Cursor `tool_call` events（`status: "running"` 階段；completed/error 階段目前忽略避免重複）
-- Cursor 工具名：`shell, read, write, edit, ls, glob, grep, semSearch, task, mcp`
+- **文字來源**：`message_update` events 的 `text_delta`
+- **工具來源**：`tool_execution_start` events（含 `args`；end/update 階段目前忽略避免重複）
+- Pi 工具名：`read, bash, edit, write, grep, find, ls`（`BOT_TOOLS` 常數，少了就加）
 - 事件每 5 秒 batch flush，連續 text delta 會合併成一條 `💬` 訊息
 - 文字合併（coalescing）：連續純文字 flush 會用 `Message.edit()` 合併到前一條 Discord 訊息
 
 ## Cost 顯示
 
-Cursor SDK 的 `RunResult` 目前不提供 cost。`SHOW_COST=true` 時 footer 會顯示 `$0.0000`。`SHOW_COST=false` 完全隱藏。
+`session.getSessionStats()` 回傳 `{ tokens, cost }` 真實金額，`SHOW_COST=true` 時 footer 顯示 session 累計 cost（注意是該 session 累計，不是單則訊息）。`SHOW_COST=false` 完全隱藏。
 
 ## Gotchas（改動前先讀）
 
-- **Stop race + placeholder pattern** (`session-manager.ts`)：`sendMessage()` 在 `await Agent.create()` / `await agent.send()` 前就把一個 `placeholder` 寫進 `this.sessions` map（`agent`/`run` 暫為 null）。`stopSession()` 設 `cancelRequested` flag，run 還沒備好就只翻 flag、sendMessage 每個 await 後檢查 flag 並 bail。`finally` 用 `this.sessions.get(channelId) === placeholder` identity-check 才 delete，避免 stop+新訊息把新 placeholder 刪掉。改動 ActiveSession 狀態時要保留這四點。
-- **`Agent.list({ cwd })` 不能 project-scope**：Cursor SDK 把 `cwd` 當 platform workspaceRef，不是 per-run `local.cwd`。`/sessions` 列的是 bot workspace 內所有 agents，跨專案 agents 也會出現。不要試圖用 `info.cwd === projectPath` filter（會把自己建的 agents 全濾掉）。
+- **Stop race + placeholder pattern** (`session-manager.ts`)：`sendMessage()` 在 `await createAgentSession()` 前就把一個 `placeholder` 寫進 `this.sessions` map（`session` 暫為 null）。`stopSession()` 設 `cancelRequested` flag，session 還沒備好就只翻 flag、sendMessage 每個 await 後檢查 flag 並 bail。`finally` 用 `this.sessions.get(channelId) === placeholder` identity-check 才 delete，避免 stop+新訊息把新 placeholder 刪掉。改動 ActiveSession 狀態時要保留這四點。
+- **`SessionManager.list(cwd)` 原生 project-scope**：session 檔按 cwd 分桶（`~/.pi/agent/sessions/--<cwd編碼>--/`），`list()` 只讀該桶，不會跨專案。傳入前先 `fs.realpathSync()` 正規化 cwd — symlink 路徑（macOS `/tmp` vs `/private/tmp`）會編碼成不同桶名。
 - **`L()` 每次都讀 `.tray-lang`**：不可把 `L(en, kr)` 結果 cache 進 module-scope 常數（會凍結語言）。`TOOL_LABELS` 用 `() => L(...)` thunks 就是這原因。
 - **DB schema 演進**：用 `ALTER TABLE ... ADD COLUMN`（try-catch on duplicate column），不要砍 column（legacy `session_id`、`auto_approve`、`output_style` 都保留）。
-- **`run.wait()` 要分流 status**：`cancelled` 跳過 result embed（讓 `/stop` 的 offline 維持），`error` 走「條件式 retry → ❌ + offline」（見下方 transient run-end retry），其他才走 success path。漏判會把 cancelled 寫成 idle 蓋掉 stop。
+- **`prompt()` abort 會 reject**：`/stop` 調 `session.abort()` 後 in-flight 的 `prompt()` 拋錯，靠 `cancelRequested` 區分 user-stop（跳過 result embed，維持 offline）vs 真錯誤（❌ + offline）。漏判會把 cancelled 寫成 idle 蓋掉 stop。
 - **tsup 打包成單檔 → module 相對路徑深度不同**：`src/claude/foo.ts` 在 dev 跑（tsx）時 `import.meta.url` 指 `src/claude/`，但 prod 全部 bundle 到 `dist/index.js`（flat）。要讀 repo 相對檔（`rules/BOT.md`、`.tray-lang` …）必須 try 多個候選深度（`../../X` 給 tsx，`../X` 給 dist），別只寫一個就 ship。可參考 `BOT_RULES` IIFE（`session-manager.ts`）。
 - **`realpathSync` 結果要往下游傳**：用 realpath 解析 + allowlist 檢查通過後，後續 `fs.existsSync` / `new AttachmentBuilder(...)` 都要用 **resolved 路徑**而不是原始輸入，否則 symlink 在驗證和讀取之間被換掉就會繞過 allowlist。`resolveIfAllowed` 回傳 `string | null` 就是強制這個 contract（`output-formatter.ts`）。
-- **Cursor SDK long-lived client 壞 state**：bot process 跑久（觀察到 ~2 天）後，`@cursor/sdk` 內部的 `@connectrpc/connect` client 會累積壞 state，`agent.send()` / `run.stream()` 拋 `ConnectError: [unauthenticated]`（gRPC code 16），fresh process 跑 spike 完全正常。SDK 沒公開 API 重建 internal client。**兩道防線**（`shouldRetryAuth` + `maybeSelfRestart`）：
-  1. **第一道：in-process retry 一次**（`session-manager.ts` catch block）。`sendMessage` 偵測 pre-run code 16 後同步 `placeholder.agent?.close()`（**不用 `[Symbol.asyncDispose]`** — async dispose 走進壞 transport 可能 hang），重新 `Agent.resume(placeholder.agentId ?? resumeAgentId)` + `agent.send(augmentedPrompt)`。`shouldRetryAuth` 內 `runStarted: placeholder.run !== null` gate **擋掉 post-run failure**（server 可能已開始執行 tools，重發 prompt 會 double-execute side effects），post-run failure 走第二道。retry 期間保留 `currentMessage` / `heartbeat` / `threadReporter` / `startTime`，只 reset `toolUseCount + lastStatusContent + lastActivity = "Reconnecting..."`。retry **無 env flag、永遠開**。論壇 forum.cursor.com/t/161203 #9 官方背書。
-  2. **第二道：process restart**（`src/utils/self-heal.ts`，共用模組）。`maybeSelfRestart()` 偵測 `Code.Unauthenticated` 後 `setTimeout(() => process.exit(1), 2000)` 讓 PM2（`autorestart: true`）拉起乾淨 process。受 env `AUTO_RESTART_ON_AUTH_ERROR` 控制、預設開。兩條路徑會呼叫：`unhandledRejection` handler (`src/index.ts`，code 16 逃成 unhandled stream reject) 和 `sendMessage` catch block（retry 失敗或 `runStarted` gate 擋下時）。守門：`process.uptime() < 300s` 的 code 16 只 log 不 exit（防 API key 真壞時 crash loop）、module-scope `restartScheduled` 一次性旗標（跨兩條路徑共享，不重複排程）、延遲 2s 讓 in-flight Discord 訊息 flush。觸發那則訊息仍會失敗，重啟後下一則才正常。
-
-  **其他細節**：`sendMessage` finally drain queue 前先查 `isRestartScheduled()`：restart pending 時清掉 in-memory queue（撐不過重啟）並通知使用者重送，不在壞連線上起新 run。`parseApiError` 對 ConnectError 走獨立 branch；catch block 把訊息送 Discord 前**先檢查開頭是不是 `❌/⚠️`** 避免 double emoji。
-
-- **後端 stale-auth 文字 = 可重試**（`isStaleAuthRunError`）：run-end `error.message` 出現 `Authentication error If you are logged in, try logging out and back in.` 時，**不是** fatal。該字串 grep 遍 `@cursor/sdk` 找不到 → 純後端原文，SDK 只是照抄。實測 2026-08-18：跑了 5 天的 bot process 連炸三次（含**新建**的 agent，故排除 session/resume 因素），同一時刻 fresh spike 用同一把 key + 同 model + 同 cwd 全部 `pong`；`pm2 restart` 後立即恢復 → 病因是本 process 的 SDK client 狀態，不是 key / 專案設定 / Cursor 全域故障。因此 `isTransientRunFailure` 對它開例外（仍受 `toolCallsObserved === 0` 把關），走 retry → 失敗才 `maybeSelfRestart()`。**注意兩道舊防線認的是 `ConnectError` code 16，這個症狀不是**，所以在此之前完全不會自癒。
-- **預防性重啟**：PM2 `--cron-restart "0 6 * * *"` 每天 06:00 重啟，趕在壞 state 累積前重置（觀察到 2~5 天會壞）。代價：硬重啟不等 in-flight run，06:00 正在跑的工作會被砍。設定存在 `~/.pm2/dump.pm2`，**`pm2 delete` + `start` 時務必帶回 `--cron-restart`**，否則會靜默掉設定。
-
-- **Transient run-end retry**（`session-manager.ts` `isTransientRunFailure` + `runErrorText` + `TransientRunError`）：SDK ≥1.0.23 的 `RunResult` 有 `error?: { message, code? }`（1.0.13 沒有，當年 spike 才會找不到 metadata）。**先看 `runErrorText(final)`（`result` 或 `error.message`）**：有文字就是 fatal（例：grok provider 內容審查「Request blocked ... usage guidelines」，retry 只會重複被擋）→ 直接把該文字送 ❌ + offline。Transient 判定 = status error + 無任何 error 文字 + `toolUseCount === 0`（沒進到 tool 執行，重送不會 double-execute；不用 duration 門檻，失敗時長 3~17 秒都見過）→ throw `TransientRunError`，外層 catch 跑 cleanup（`agent?.close()` 同步 close、reset UI state、`Agent.resume(placeholder.agentId ?? resumeAgentId)`）+ `runAttempt` 重跑一次。retry 進入點是 markDone() 之後，所以多一步 `sessionDone = false` 讓 renderStatus 重新 active。retry 再拋 `TransientRunError` → `maybeSelfRestart()`（保險，防 process 級壞 state）再 fall-through 到 finalError handler。**誤診教訓**：升 1.0.23 前 content-block 長得跟 transient 一模一樣（`result: undefined`），別再用舊 log 推斷 — 先看 `error.message`。
-- **殭屍 active run → `local.force`**：process 被砍（pm2 delete/restart mid-run）後，Cursor persisted state 會留著 active run，之後 resume + `agent.send()` 拋 `UnknownAgentError: ... already has active run`，該 channel 永久卡死。修法：`agent.send(prompt, { local: { force: true } })` 先 expire 殘留 run（SDK typedef 明寫這是 crashed-process recovery path）。bot 的 sessions map 已保證 per-channel 序列化，send 時的 active run 必為殭屍，所以永遠帶 force 是安全的。
-- **`@connectrpc/connect` 直接 import**：原本只是 `@cursor/sdk` 的 transitive dep，已升 direct（為了 `ConnectError instanceof` 判斷 + `Code` enum）。偵測 ConnectError 用 `isConnectError()` helper（`session-manager.ts`，已 export），它同時認 real instance 和 duck-typed `Error & { name === "ConnectError" }`。
+- **PI_MODEL 一定要帶 `:level`**：`resolveCliModel()` 無 suffix 時回傳 `thinkingLevel=undefined`，session 會 fallback 到使用者 `settings.json` 的 defaultThinkingLevel，bot 行為被本機設定綁住。預設值寫死 `:medium` 就是防這個。
+- **resume 一律 `setModel(botModel)`**：session 檔可能記著本機 pi CLI 跑過的別顆 model，不釘回來計費跟行為都不固定（spike 已驗證）。
+- **`AgentMessage` 沒 export**：SDK 不 export 該型別，最終文字提取走結構型別（`extractAssistantText`，已 export、可單測）。
 
 ## Migration history
 
 從 Claude Agent SDK 遷移到 Cursor SDK 的完整 plan + 決策紀錄：
 `specs/plan/plan-2026-05-17_16-25-36_cursor-sdk-migration_fbb7d013-38f.md`
+
+從 Cursor SDK 遷移到 Pi Agent SDK 的 plan + spike：
+`specs/plan/plan-2026-09-19_10-30-00_pi-sdk-migration.md`、`spike/pi-session.ts`
 
 ## 測試
 
@@ -153,7 +148,7 @@ npm test              # vitest run（單次）
 npm run test:watch    # vitest（監視模式）
 ```
 
-- `formatToolDetail`、`parseApiError`、`isConnectError` 是從 `session-manager.ts` 提取出的 exported pure functions
+- `formatToolDetail`、`parseApiError`、`extractAssistantText` 是從 `session-manager.ts` 提取出的 exported pure functions
 - `ThreadReporter` 測試用 `vi.useFakeTimers()`，async flush 需搭配 `Promise.resolve()` yield
 - `config.test.ts` 每個 test case 都需要 `vi.resetModules()` + dynamic import（因 `_config` 快取）
-- Cursor SDK 在測試中 mock：`vi.mock("@cursor/sdk", () => ({ Agent: { create, resume, list } }))`
+- Pi SDK 在測試中 mock：`vi.mock("@earendil-works/pi-coding-agent", ...)`（`createAgentSession`、`ModelRuntime`、`SessionManager`、`resolveCliModel`、`DefaultResourceLoader`、`getAgentDir`）

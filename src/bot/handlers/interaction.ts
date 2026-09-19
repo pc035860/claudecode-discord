@@ -1,29 +1,45 @@
 import { randomUUID } from "node:crypto";
+import fs from "node:fs";
+import path from "node:path";
 import {
   ButtonInteraction,
   StringSelectMenuInteraction,
   ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
+  StringSelectMenuBuilder,
 } from "discord.js";
 import { isAllowedUser } from "../../security/guard.js";
 import { sessionManager } from "../../claude/session-manager.js";
-import { upsertSession } from "../../db/database.js";
-import { NEW_SESSION_SENTINEL } from "../commands/sessions.js";
+import {
+  findChannelsBySessionFile,
+  getProject,
+  getSession,
+  upsertSession,
+} from "../../db/database.js";
+import {
+  NEW_SESSION_SENTINEL,
+  listProjectSessions,
+} from "../commands/sessions.js";
 import { L } from "../../utils/i18n.js";
+
+function shortSessionLabel(filePath: string): string {
+  const base = path.basename(filePath, ".jsonl");
+  return base.length > 24 ? `...${base.slice(-20)}` : base;
+}
 
 async function applyResume(
   interaction: ButtonInteraction | StringSelectMenuInteraction,
-  agentId: string,
+  sessionFile: string,
 ): Promise<void> {
-  upsertSession(randomUUID(), interaction.channelId, agentId, "idle");
+  upsertSession(randomUUID(), interaction.channelId, sessionFile, "idle");
   await interaction.update({
     embeds: [
       {
         title: L("Session Resumed", "세션 재개됨"),
         description: L(
-          `Session: \`${agentId.slice(0, 12)}...\`\n\nNext message you send will resume this conversation.`,
-          `세션: \`${agentId.slice(0, 12)}...\`\n\n다음 메시지부터 이 대화가 재개됩니다.`,
+          `Session: \`${shortSessionLabel(sessionFile)}\`\n\nNext message you send will resume this conversation.`,
+          `세션: \`${shortSessionLabel(sessionFile)}\`\n\n다음 메시지부터 이 대화가 재개됩니다.`,
         ),
         color: 0x00ff00,
       },
@@ -124,6 +140,55 @@ export async function handleButtonInteraction(
 
   if (action === "session-resume") {
     await applyResume(interaction, requestId);
+    return;
+  }
+
+  if (action === "session-delete-list") {
+    const channelId = requestId;
+    const project = getProject(channelId);
+    if (!project) {
+      await interaction.reply({
+        content: L("Channel is not registered to any project.", "등록된 프로젝트가 없습니다."),
+        ephemeral: true,
+      });
+      return;
+    }
+    let sessions;
+    try {
+      sessions = await listProjectSessions(project.project_path);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      await interaction.reply({ content: `❌ ${msg}`, ephemeral: true });
+      return;
+    }
+    const dbSession = getSession(channelId);
+    const linkedFile = dbSession?.pi_session_file ?? null;
+    if (sessions.length === 0) {
+      await interaction.update({
+        content: L("No sessions left to delete.", "삭제할 세션이 없습니다."),
+        embeds: [],
+        components: [],
+      });
+      return;
+    }
+    const deleteOptions = sessions.map((s) => ({
+      label: (s.filePath === linkedFile ? `🔒 ${s.name}` : s.name).slice(0, 50),
+      description: `${s.messageCount} msgs | ${shortSessionLabel(s.filePath)}`.slice(0, 100),
+      value: s.filePath,
+    }));
+    const deleteMenu = new StringSelectMenuBuilder()
+      .setCustomId("session-delete-select")
+      .setPlaceholder(L("Select a session to DELETE...", "삭제할 세션을 선택하세요..."))
+      .addOptions(deleteOptions.slice(0, 25));
+    const row = new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(deleteMenu);
+    await interaction.update({
+      content: L(
+        "⚠️ Select a session to permanently delete. The session linked to this channel (🔒) cannot be deleted — switch to a new session first.",
+        "⚠️ 영구 삭제할 세션을 선택하세요. 이 채널에 연결된 세션(🔒)은 삭제할 수 없습니다 — 먼저 새 세션으로 전환하세요.",
+      ),
+      embeds: [],
+      components: [row],
+    });
     return;
   }
 
@@ -253,15 +318,115 @@ export async function handleSelectMenuInteraction(
     return;
   }
 
+  if (interaction.customId === "session-delete-select") {
+    const rawValue = interaction.values[0];
+    const channelId = interaction.channelId;
+    const project = getProject(channelId);
+    if (!project) {
+      await interaction.update({
+        content: L("Channel is not registered to any project.", "등록된 프로젝트가 없습니다."),
+        embeds: [],
+        components: [],
+      });
+      return;
+    }
+    // Allowlist: only delete paths that appear in a FRESH project listing.
+    // This rejects spoofed values and already-deleted files alike.
+    let listed: string[];
+    try {
+      const sessions = await listProjectSessions(project.project_path);
+      listed = [];
+      for (const s of sessions) {
+        try {
+          listed.push(fs.realpathSync(s.filePath));
+        } catch {
+          // Vanished between list() and now (concurrent delete) —
+          // just exclude it instead of failing the whole verification.
+        }
+      }
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      await interaction.update({
+        content: `❌ ${L("Could not verify session:", "세션 확인 실패:")} ${msg}`,
+        embeds: [],
+        components: [],
+      });
+      return;
+    }
+    let filePath: string;
+    try {
+      filePath = fs.realpathSync(rawValue);
+    } catch {
+      await interaction.update({
+        content: L("This session file no longer exists.", "이 세션 파일은 이미 없습니다."),
+        embeds: [],
+        components: [],
+      });
+      return;
+    }
+    if (!listed.includes(filePath)) {
+      await interaction.update({
+        content: L("This session is not part of the project list.", "이 세션은 프로젝트 목록에 없습니다."),
+        embeds: [],
+        components: [],
+      });
+      return;
+    }
+    // Refuse when ANY channel references the file — the list is
+    // project-scoped, so another channel on the same project may own it
+    // or be actively writing to it.
+    const linkedChannels = findChannelsBySessionFile(filePath);
+    // The stored path may be non-canonical (saved pre-realpath through a
+    // symlink), so also match the raw value — do NOT simplify this away.
+    const rawLinked = findChannelsBySessionFile(rawValue);
+    const owners = [...new Set([...linkedChannels, ...rawLinked])];
+    if (owners.length > 0) {
+      const mine = owners.length === 1 && owners[0] === channelId;
+      await interaction.update({
+        content: mine
+          ? L(
+            "🔒 This session is linked to the current channel and cannot be deleted. Use `/sessions` → Create New Session first, then delete it.",
+            "🔒 이 세션은 현재 채널에 연결되어 있어 삭제할 수 없습니다. `/sessions`에서 새 세션을 먼저 만든 뒤 삭제하세요.",
+          )
+          : L(
+            `🔒 This session is linked to ${owners.length === 1 ? "another channel" : `${owners.length} channels`} and cannot be deleted.`,
+            `🔒 이 세션은 다른 채널에 연결되어 있어 삭제할 수 없습니다.`,
+          ),
+        embeds: [],
+        components: [],
+      });
+      return;
+    }
+    try {
+      fs.unlinkSync(filePath);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      await interaction.update({
+        content: `❌ ${L("Delete failed:", "삭제 실패:")} ${msg}`,
+        embeds: [],
+        components: [],
+      });
+      return;
+    }
+    await interaction.update({
+      content: L(
+        `🗑️ Deleted session \`${shortSessionLabel(filePath)}\`.`,
+        `🗑️ 세션 \`${shortSessionLabel(filePath)}\`을(를) 삭제했습니다.`,
+      ),
+      embeds: [],
+      components: [],
+    });
+    return;
+  }
+
   if (interaction.customId !== "session-select") return;
 
-  const selectedAgentId = interaction.values[0];
+  const selectedFile = interaction.values[0];
 
-  if (selectedAgentId === NEW_SESSION_SENTINEL) {
+  if (selectedFile === NEW_SESSION_SENTINEL) {
     await applyNewSession(interaction, interaction.channelId);
     return;
   }
 
-  // Direct resume — no preview (Cursor SDK has no JSONL transcript access).
-  await applyResume(interaction, selectedAgentId);
+  await applyResume(interaction, selectedFile);
 }

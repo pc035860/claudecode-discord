@@ -45,6 +45,14 @@ export function initDatabase(): void {
       console.error("[db] migration failed (agent_id):", e);
     }
   }
+
+  try {
+    db.exec(`ALTER TABLE sessions ADD COLUMN pi_session_file TEXT`);
+  } catch (e) {
+    if (!(e instanceof Error && e.message.includes("duplicate column"))) {
+      console.error("[db] migration failed (pi_session_file):", e);
+    }
+  }
 }
 
 export function getDb(): Database.Database {
@@ -85,14 +93,14 @@ export function getAllProjects(guildId: string): Project[] {
 export function upsertSession(
   id: string,
   channelId: string,
-  agentId: string | null,
+  sessionFile: string | null,
   status: SessionStatus,
 ): void {
   const stmt = db.prepare(`
-    INSERT OR REPLACE INTO sessions (id, channel_id, session_id, agent_id, status, last_activity)
-    VALUES (?, ?, NULL, ?, ?, datetime('now'))
+    INSERT OR REPLACE INTO sessions (id, channel_id, session_id, agent_id, pi_session_file, status, last_activity)
+    VALUES (?, ?, NULL, NULL, ?, ?, datetime('now'))
   `);
-  stmt.run(id, channelId, agentId, status);
+  stmt.run(id, channelId, sessionFile, status);
 }
 
 export function getSession(channelId: string): Session | undefined {
@@ -101,6 +109,13 @@ export function getSession(channelId: string): Session | undefined {
       "SELECT * FROM sessions WHERE channel_id = ? ORDER BY created_at DESC LIMIT 1",
     )
     .get(channelId) as Session | undefined;
+}
+
+export function findChannelsBySessionFile(sessionFile: string): string[] {
+  const rows = db
+    .prepare("SELECT channel_id FROM sessions WHERE pi_session_file = ?")
+    .all(sessionFile) as { channel_id: string }[];
+  return rows.map((r) => r.channel_id);
 }
 
 export function updateSessionStatus(

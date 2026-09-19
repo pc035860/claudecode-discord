@@ -6,9 +6,9 @@
 
 [![CI](https://github.com/chadingTV/claudecode-discord/actions/workflows/ci.yml/badge.svg)](https://github.com/chadingTV/claudecode-discord/actions)
 
-Control a Cursor SDK agent from your phone — a multi-machine agent hub via Discord.
+Control a Pi coding agent from your phone — a multi-machine agent hub via Discord.
 
-> **Migrated to Cursor Agent SDK (`@cursor/sdk` ~1.0.13).** Previously used `@anthropic-ai/claude-agent-sdk`; some interactive features were trimmed during the swap. Requires a `CURSOR_API_KEY` (Cursor Dashboard → Integrations) and Node ≥ 22.
+> **Migrated to Pi Agent SDK (`@earendil-works/pi-coding-agent` ^0.85.1).** Previously drove `@cursor/sdk` cloud agents, originally `@anthropic-ai/claude-agent-sdk`. Runs the agent locally in-process; auth reuses `~/.pi/agent/auth.json`. Node ≥ 22 required.
 
 <p align="center">
   <img src="docs/demo.gif" alt="Demo — register a project and code with Claude from Discord" width="300">
@@ -58,17 +58,17 @@ Discord isn't just a chat app — it's a surprisingly perfect fit for controllin
 
 ## Features
 
-- 📱 Remote control a Cursor SDK agent from Discord (desktop/web/mobile)
+- 📱 Remote control a Pi coding agent from Discord (desktop/web/mobile)
 - 🔀 Independent sessions per channel (project directory mapping)
 - ⏹️ Stop button for instant cancellation during progress, message queue for sequential tasks
 - 📎 File attachments — inbound: Discord uploads downloaded to `<project>/.claude-uploads/`; outbound: agent emits `[ATTACH: /abs/path]` markers, bot uploads with `/tmp` + project-path allowlist
-- 🔄 Session resume across bot restarts (Cursor agents listed via `Agent.list`)
+- 🔄 Session resume across bot restarts (per-project session files via `SessionManager.list`)
 - ⏱️ Real-time progress display (tool usage, elapsed time)
 - 🧵 **Thread progress** — auto-created Discord thread with live tool calls and assistant text streaming
-- ⚙️ **Configurable model** — set `CURSOR_MODEL` (default `composer-2-fast`) and `CURSOR_MODEL_PARAMS` in `.env`; `/cursor-models` lists available models
+- ⚙️ **Configurable model** — set `PI_MODEL` (default `openrouter/meta/muse-spark-1.3-contributor:medium`) in `.env`; `/models` lists available models
 - 🔒 User whitelist, rate limiting, path security
 
-> **MVP-trimmed features** (vs the previous Claude Code SDK build): per-tool interactive approval (Cursor SDK has no `canUseTool` callback — runs in full-allow mode), `/auto-approve`, `/rename-session`, `/last`, `/clear-sessions`, `/output-styles`, output-style injection, `/sessions` preview + delete buttons.
+> **Trimmed features** (vs the original Claude Code SDK build): per-tool interactive approval (runs in full-allow mode), `/auto-approve`, `/last`, `/clear-sessions`, `/output-styles`. Restored in the Pi build: `/rename-session`, `/sessions` preview + delete, real cost display.
 
 ## Tech Stack
 
@@ -76,7 +76,7 @@ Discord isn't just a chat app — it's a surprisingly perfect fit for controllin
 |----------|------------|
 | Runtime | Node.js 22+, TypeScript |
 | Discord | discord.js v14 |
-| AI | @cursor/sdk (~1.0.13) |
+| AI | @earendil-works/pi-coding-agent (^0.85.1) |
 | DB | better-sqlite3 (SQLite) |
 | Validation | zod v4 |
 | Build | tsup (ESM) |
@@ -145,10 +145,11 @@ claudecode-discord/
 | `/register <folder>` | Link current channel to a project | `/register my-project` |
 | `/unregister` | Unlink channel | |
 | `/status` | Check all session statuses | |
-| `/stop` | Stop current channel's session (`run.cancel()`) | |
+| `/stop` | Stop current channel's session (`session.abort()`) | |
 | `/new-session` | Start a new session in this channel | |
-| `/sessions` | List Cursor agents to resume | |
-| `/cursor-models` | List available Cursor SDK models | |
+| `/sessions` | List/resume/delete project sessions | |
+| `/rename-session <name>` | Rename the channel's session | |
+| `/models` | List available Pi models | |
 | `/usage` | Show Claude Code usage (legacy, separate OAuth) | |
 | `/queue list` | View queued messages (cancel individually or all) | |
 | `/queue clear` | Cancel all queued messages | |
@@ -172,14 +173,14 @@ Attach images, documents, or code files and Claude can read and analyze them.
 <summary><strong>Architecture</strong></summary>
 
 ```
-[Mobile Discord] ←→ [Discord Bot] ←→ [Session Manager] ←→ [Cursor Agent SDK]
+[Mobile Discord] ←→ [Discord Bot] ←→ [Session Manager] ←→ [Pi Agent SDK]
                           ↕
                      [SQLite DB]
 ```
 
 - Independent sessions per channel (project directory mapping)
-- Cursor Agent SDK (`@cursor/sdk`) drives Cursor agents via `Agent.create` / `Agent.resume` + `run.stream()`
-- Tool use runs in full-allow mode (Cursor SDK has no per-tool callback)
+- Pi Agent SDK drives local agents via `createAgentSession` + `session.prompt()` with event subscription
+- Tool use runs in full-allow mode
 - Streaming responses edited every 1.5s into Discord messages
 - Heartbeat progress display every 15s until text output begins
 - Markdown code blocks preserved across message splits
@@ -201,7 +202,7 @@ This bot:            Bot → [Connects to Discord] → Receives events         (
 
 ### Self-Hosted Architecture
 
-The bot runs entirely on your own PC/server. No external servers involved, and no data leaves your machine except through Discord and the Cursor API (authenticated with your own `CURSOR_API_KEY`).
+The bot runs entirely on your own PC/server. The agent runs locally in-process; no data leaves your machine except through Discord and your configured model provider (authenticated via `~/.pi/agent/auth.json`).
 
 ### Access Control
 
@@ -211,14 +212,14 @@ The bot runs entirely on your own PC/server. No external servers involved, and n
 
 ### Execution Protection
 
-- Tool use runs in **full-allow mode** (Cursor Agent SDK has no per-call approval callback). For static tool gating, configure `.cursor/permissions.json` per project.
+- Tool use runs in **full-allow mode**.
 - Path traversal (`..`) blocked
 - File attachments: executable files (.exe, .bat, etc.) blocked, 25MB size limit
 
 ### Precautions
 
-- The `.env` file contains your Discord bot token AND `CURSOR_API_KEY` — **never share it publicly.** If a token is compromised, rotate immediately (Discord Developer Portal / Cursor Dashboard).
-- Full-allow mode means Cursor can perform any action the agent decides — use only on trusted projects, ideally with `.cursor/permissions.json` restricting destructive tools.
+- The `.env` file contains your Discord bot token — **never share it publicly.** Model provider keys live in `~/.pi/agent/auth.json`; if a token is compromised, rotate immediately (Discord Developer Portal / provider dashboard).
+- Full-allow mode means the agent can perform any action it decides — use only on trusted projects.
 
 ## Quick Start by Platform
 

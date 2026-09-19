@@ -1,42 +1,39 @@
 import { randomUUID } from "node:crypto";
+import fs from "node:fs";
 import {
   ChatInputCommandInteraction,
   SlashCommandBuilder,
   ActionRowBuilder,
   StringSelectMenuBuilder,
+  ButtonBuilder,
+  ButtonStyle,
 } from "discord.js";
-import { Agent } from "@cursor/sdk";
+import { SessionManager as PiSessionManager } from "@earendil-works/pi-coding-agent";
 import { getProject, getSession, upsertSession } from "../../db/database.js";
 import { L } from "../../utils/i18n.js";
 
 export const NEW_SESSION_SENTINEL = "__new_session__";
-const SESSION_LIST_LIMIT = 50;
+const SESSION_LIST_LIMIT = 25;
 
-interface SessionInfo {
-  agentId: string;
+export interface PiSessionEntry {
+  filePath: string;
   name: string;
-  summary: string;
+  preview: string;
+  messageCount: number;
   lastModified: number;
 }
 
-async function listAgents(): Promise<SessionInfo[]> {
-  // Cursor SDK Agent.list() returns the platform workspaceRef as `cwd`, not
-  // the per-run `local.cwd` we passed at create time. There is no reliable
-  // way to project-scope from SDKAgentInfo today, so we list all non-archived
-  // local agents in this bot workspace and let the user pick by name + recency.
-  const result = await Agent.list({
-    runtime: "local",
-    limit: SESSION_LIST_LIMIT,
-  });
-  return result.items
-    .filter((a) => !a.archived && a.runtime === "local")
-    .map((a) => ({
-      agentId: a.agentId,
-      name: a.name,
-      summary: a.summary,
-      lastModified: a.lastModified,
-    }))
-    .sort((a, b) => b.lastModified - a.lastModified);
+export async function listProjectSessions(projectPath: string): Promise<PiSessionEntry[]> {
+  // Session files live in per-cwd buckets (~/.pi/agent/sessions/--<cwd>--/),
+  // so list() is inherently project-scoped — no cross-project leakage.
+  const infos = await PiSessionManager.list(fs.realpathSync(projectPath));
+  return infos.slice(0, SESSION_LIST_LIMIT).map((info) => ({
+    filePath: info.path,
+    name: info.name || info.firstMessage || `Session ${info.id.slice(0, 8)}`,
+    preview: info.firstMessage || "",
+    messageCount: info.messageCount,
+    lastModified: info.modified.getTime(),
+  }));
 }
 
 function formatRelativeTime(ts: number): string {
@@ -56,7 +53,7 @@ function formatRelativeTime(ts: number): string {
 
 export const data = new SlashCommandBuilder()
   .setName("sessions")
-  .setDescription("List and resume existing Cursor agent sessions for this project");
+  .setDescription("List, resume, or delete Pi agent sessions for this project");
 
 export async function execute(
   interaction: ChatInputCommandInteraction,
@@ -74,9 +71,9 @@ export async function execute(
     return;
   }
 
-  let sessions: SessionInfo[];
+  let sessions: PiSessionEntry[];
   try {
-    sessions = await listAgents();
+    sessions = await listProjectSessions(project.project_path);
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     await interaction.editReply({
@@ -106,7 +103,7 @@ export async function execute(
   }
 
   const dbSession = getSession(channelId);
-  const activeAgentId = dbSession?.agent_id ?? null;
+  const activeFile = dbSession?.pi_session_file ?? null;
 
   const options: Array<{
     label: string;
@@ -124,21 +121,20 @@ export async function execute(
     },
   ];
 
-  const sessionOptions = sessions.slice(0, 24).map((s, i) => {
+  const sessionOptions = sessions.slice(0, 24).map((s) => {
     const timeStr = formatRelativeTime(s.lastModified);
-    const isActive = s.agentId === activeAgentId;
-    const displayName = s.name || s.summary || `Session ${i + 1}`;
+    const isActive = s.filePath === activeFile;
     const label = isActive
-      ? `▶ ${displayName.slice(0, 48)}`
-      : displayName.slice(0, 50);
+      ? `▶ ${s.name.slice(0, 48)}`
+      : s.name.slice(0, 50);
     const desc = isActive
-      ? `${L("Active", "사용 중")} | ${timeStr} | ${s.agentId.slice(0, 8)}...`
-      : `${timeStr} | ${s.agentId.slice(0, 12)}...`;
+      ? `${L("Active", "사용 중")} | ${s.messageCount} msgs | ${timeStr}`
+      : `${s.messageCount} msgs | ${timeStr}`;
 
     return {
       label,
       description: desc.slice(0, 100),
-      value: s.agentId,
+      value: s.filePath,
       default: isActive,
     };
   });
@@ -150,27 +146,27 @@ export async function execute(
     .setPlaceholder(L("Select a session to resume...", "재개할 세션을 선택하세요..."))
     .addOptions(options);
 
-  const row = new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(selectMenu);
+  const selectRow = new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(selectMenu);
+  const deleteButton = new ButtonBuilder()
+    .setCustomId(`session-delete-list:${channelId}`)
+    .setLabel(L("🗑️ Delete a session...", "🗑️ 세션 삭제..."))
+    .setStyle(ButtonStyle.Danger);
+  const buttonRow = new ActionRowBuilder<ButtonBuilder>().addComponents(deleteButton);
 
   await interaction.editReply({
     embeds: [
       {
-        title: L("Cursor Agent Sessions", "Cursor 에이전트 세션"),
+        title: L("Pi Agent Sessions", "Pi 에이전트 세션"),
         description: [
           `Project: \`${project.project_path}\``,
           L(
-            `Found **${sessions.length}** local agent(s) in this bot workspace`,
-            `이 봇 워크스페이스에서 **${sessions.length}**개의 로컬 에이전트를 찾았습니다`,
-          ),
-          "",
-          L(
-            "Cursor SDK does not expose per-project scoping; agents from other projects on this workspace may appear here. Pick by name / recency.",
-            "Cursor SDK는 프로젝트별 범위 지정을 지원하지 않으므로 이 워크스페이스의 다른 프로젝트 에이전트도 나타날 수 있습니다. 이름과 최근 시각으로 선택하세요.",
+            `Found **${sessions.length}** session(s) for this project`,
+            `이 프로젝트에서 **${sessions.length}**개의 세션을 찾았습니다`,
           ),
         ].join("\n"),
         color: 0x7c3aed,
       },
     ],
-    components: [row],
+    components: [selectRow, buttonRow],
   });
 }

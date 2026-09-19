@@ -14,24 +14,20 @@ vi.mock("../db/database.js", () => ({
 vi.mock("../utils/config.js", () => ({
   getConfig: vi.fn(() => ({
     SHOW_COST: true,
-    CURSOR_API_KEY: "test-key",
-    CURSOR_MODEL: "composer-2",
-    CURSOR_MODEL_PARAMS: undefined,
+    PI_MODEL: "openrouter/meta/muse-spark-1.3-contributor:medium",
     THREAD_PROGRESS: false,
   })),
 }));
 
-vi.mock("@cursor/sdk", () => ({
-  Agent: {
-    create: vi.fn(),
-    resume: vi.fn(),
-    list: vi.fn(),
-  },
-}));
-
-vi.mock("../utils/self-heal.js", () => ({
-  maybeSelfRestart: vi.fn(),
-  isRestartScheduled: vi.fn(() => false),
+vi.mock("@earendil-works/pi-coding-agent", () => ({
+  createAgentSession: vi.fn(),
+  getAgentDir: vi.fn(() => "/tmp/agent-dir"),
+  DefaultResourceLoader: vi.fn(function (this: unknown) {
+    return { reload: vi.fn().mockResolvedValue(undefined) };
+  }),
+  ModelRuntime: { create: vi.fn() },
+  SessionManager: { open: vi.fn(), create: vi.fn() },
+  resolveCliModel: vi.fn(),
 }));
 
 vi.mock("./output-formatter.js", () => ({
@@ -42,18 +38,55 @@ vi.mock("./output-formatter.js", () => ({
   sendAttachments: vi.fn().mockResolvedValue(undefined),
 }));
 
-import { ConnectError, Code } from "@connectrpc/connect";
+vi.mock("./thread-reporter.js", () => ({
+  ThreadReporter: vi.fn(function (this: unknown) {
+    return { start: vi.fn(), stop: vi.fn().mockResolvedValue(undefined), pushText: vi.fn(), pushTool: vi.fn() };
+  }),
+}));
+
 import {
   sessionManager,
   formatToolDetail,
   parseApiError,
-  isConnectError,
-  isTransientRunFailure,
-  isStaleAuthRunError,
+  extractAssistantText,
 } from "./session-manager.js";
 
 function mockChannel(id: string) {
   return { id, send: vi.fn().mockResolvedValue({ edit: vi.fn() }) } as any;
+}
+
+function mockPiSession(overrides: Record<string, any> = {}) {
+  return {
+    prompt: vi.fn().mockResolvedValue(undefined),
+    subscribe: vi.fn(() => vi.fn()),
+    setModel: vi.fn().mockResolvedValue(undefined),
+    abort: vi.fn().mockResolvedValue(undefined),
+    dispose: vi.fn(),
+    messages: [
+      { role: "user", content: [{ type: "text", text: "hi" }] },
+      { role: "assistant", content: [{ type: "text", text: "done" }] },
+    ],
+    sessionFile: "/sessions/test.jsonl",
+    sessionId: "sess-1",
+    getSessionStats: vi.fn(() => ({ cost: 0.0123, tokens: { total: 100 } })),
+    ...overrides,
+  };
+}
+
+async function setupPiMocks(sessionOverrides: Record<string, any> = {}) {
+  const pi = await import("@earendil-works/pi-coding-agent");
+  const session = mockPiSession(sessionOverrides);
+  (pi.ModelRuntime.create as any).mockResolvedValue({});
+  (pi.resolveCliModel as any).mockReturnValue({
+    model: { id: "meta/muse-spark-1.3-contributor" },
+    thinkingLevel: "medium",
+    warning: undefined,
+    error: undefined,
+  });
+  (pi.SessionManager.create as any).mockReturnValue({});
+  (pi.SessionManager.open as any).mockReturnValue({});
+  (pi.createAgentSession as any).mockResolvedValue({ session, modelFallbackMessage: undefined });
+  return { pi, session };
 }
 
 describe("SessionManager", () => {
@@ -133,41 +166,8 @@ describe("SessionManager", () => {
   });
 });
 
-describe("sendMessage retry on ConnectError code 16", () => {
-  const channelId = "retry-test-ch";
-  const authError = new ConnectError(
-    "[unauthenticated] Error",
-    Code.Unauthenticated,
-  );
-
-  async function getResume(): Promise<any> {
-    return (await import("@cursor/sdk")).Agent.resume;
-  }
-
-  async function getSelfHeal(): Promise<any> {
-    return await import("../utils/self-heal.js");
-  }
-
-  function makeRun(status: "completed" | "error" = "completed") {
-    return {
-      stream: vi.fn(() => (async function* () {})()),
-      wait: vi.fn().mockResolvedValue({
-        id: "run-1",
-        status,
-        result: "ok",
-        durationMs: 100,
-      }),
-      cancel: vi.fn().mockResolvedValue(undefined),
-    };
-  }
-
-  function makeAgent(agentId = "agent-1") {
-    return {
-      agentId,
-      send: vi.fn().mockResolvedValue(makeRun()),
-      close: vi.fn(),
-    };
-  }
+describe("sendMessage (Pi engine)", () => {
+  const channelId = "pi-send-ch";
 
   beforeEach(async () => {
     vi.clearAllMocks();
@@ -175,15 +175,9 @@ describe("sendMessage retry on ConnectError code 16", () => {
     (db.getProject as any).mockReturnValue({
       id: "p1",
       channel_id: channelId,
-      project_path: "/tmp/retry-test",
+      project_path: "/tmp",
     });
-    // Seed a known agent_id so sendMessage takes the Agent.resume path.
-    (db.getSession as any).mockReturnValue({
-      id: "db-1",
-      agent_id: "agent-1",
-    });
-    const selfHeal = await getSelfHeal();
-    selfHeal.isRestartScheduled.mockReturnValue(false);
+    (db.getSession as any).mockReturnValue(undefined);
   });
 
   afterEach(async () => {
@@ -192,450 +186,115 @@ describe("sendMessage retry on ConnectError code 16", () => {
     }
   });
 
-  it("retries once when Agent.resume throws unauthenticated, then succeeds silently", async () => {
-    const resume = await getResume();
-    resume
-      .mockRejectedValueOnce(authError)
-      .mockResolvedValueOnce(makeAgent());
-
+  it("creates a fresh session when no resume file, prompts, and sends result embed with real cost", async () => {
+    const { pi, session } = await setupPiMocks();
+    // Stats are cumulative: snapshot 0 before the run, 0.0123 after.
+    session.getSessionStats
+      .mockReturnValueOnce({ cost: 0, tokens: { total: 10 } })
+      .mockReturnValue({ cost: 0.0123, tokens: { total: 100 } });
     const channel = mockChannel(channelId);
     await sessionManager.sendMessage(channel, "hello");
 
-    expect(resume).toHaveBeenCalledTimes(2);
+    expect(pi.SessionManager.create).toHaveBeenCalled();
+    expect(pi.SessionManager.open).not.toHaveBeenCalled();
+    expect(session.setModel).not.toHaveBeenCalled();
+    expect(session.prompt).toHaveBeenCalledWith("hello");
 
-    const sent = (channel.send as any).mock.calls.map((c: any[]) => c[0]);
-    const errs = sent.filter(
-      (m: any) => typeof m === "string" && /^[❌⚠️]/u.test(m),
+    const formatter = await import("./output-formatter.js");
+    expect(formatter.createResultEmbed).toHaveBeenCalledWith(
+      "done",
+      0.0123,
+      expect.any(Number),
+      true,
     );
-    expect(errs).toHaveLength(0);
 
-    const selfHeal = await getSelfHeal();
-    expect(selfHeal.maybeSelfRestart).not.toHaveBeenCalled();
-  });
-
-  it("falls back to maybeSelfRestart when both attempts throw unauthenticated", async () => {
-    const resume = await getResume();
-    resume.mockRejectedValueOnce(authError).mockRejectedValueOnce(authError);
-
-    const channel = mockChannel(channelId);
-    await sessionManager.sendMessage(channel, "hello");
-
-    expect(resume).toHaveBeenCalledTimes(2);
-
-    const selfHeal = await getSelfHeal();
-    expect(selfHeal.maybeSelfRestart).toHaveBeenCalledTimes(1);
-
-    const sent = (channel.send as any).mock.calls.map((c: any[]) => c[0]);
-    const adminMsg = sent.find(
-      (m: any) =>
-        typeof m === "string" && /Authentication broken/.test(m),
-    );
-    expect(adminMsg).toBeDefined();
-  });
-
-  it("does not retry for non-auth ConnectError codes", async () => {
-    const resume = await getResume();
-    const otherError = new ConnectError("[internal] boom", Code.Internal);
-    resume.mockRejectedValueOnce(otherError);
-
-    const channel = mockChannel(channelId);
-    await sessionManager.sendMessage(channel, "hello");
-
-    expect(resume).toHaveBeenCalledTimes(1);
-
-    const selfHeal = await getSelfHeal();
-    expect(selfHeal.maybeSelfRestart).not.toHaveBeenCalled();
-  });
-
-  it("retries once when agent.send throws unauthenticated (run not yet started), disposing broken handle", async () => {
-    const resume = await getResume();
-    const failedAgent = makeAgent("agent-1");
-    const goodAgent = makeAgent("agent-1");
-    failedAgent.send = vi.fn().mockRejectedValueOnce(authError);
-    resume
-      .mockResolvedValueOnce(failedAgent)
-      .mockResolvedValueOnce(goodAgent);
-
-    const channel = mockChannel(channelId);
-    await sessionManager.sendMessage(channel, "hello");
-
-    expect(resume).toHaveBeenCalledTimes(2);
-    expect(failedAgent.send).toHaveBeenCalledTimes(1);
-    expect(goodAgent.send).toHaveBeenCalledTimes(1);
-    expect(failedAgent.close).toHaveBeenCalled();
-
-    const selfHeal = await getSelfHeal();
-    expect(selfHeal.maybeSelfRestart).not.toHaveBeenCalled();
-  });
-
-  it("does not retry when run.wait throws unauthenticated (run already started)", async () => {
-    const resume = await getResume();
-    const agentInstance = makeAgent();
-    const run = {
-      stream: vi.fn(() => (async function* () {})()),
-      wait: vi.fn().mockRejectedValue(authError),
-      cancel: vi.fn().mockResolvedValue(undefined),
-    };
-    agentInstance.send = vi.fn().mockResolvedValue(run);
-    resume.mockResolvedValueOnce(agentInstance);
-
-    const channel = mockChannel(channelId);
-    await sessionManager.sendMessage(channel, "hello");
-
-    expect(resume).toHaveBeenCalledTimes(1);
-    expect(agentInstance.send).toHaveBeenCalledTimes(1);
-
-    const selfHeal = await getSelfHeal();
-    expect(selfHeal.maybeSelfRestart).toHaveBeenCalledTimes(1);
-  });
-
-  it("skips retry when isRestartScheduled() already true", async () => {
-    const selfHeal = await getSelfHeal();
-    selfHeal.isRestartScheduled.mockReturnValue(true);
-    const resume = await getResume();
-    resume.mockRejectedValueOnce(authError);
-
-    const channel = mockChannel(channelId);
-    await sessionManager.sendMessage(channel, "hello");
-
-    expect(resume).toHaveBeenCalledTimes(1);
-    expect(selfHeal.maybeSelfRestart).toHaveBeenCalledTimes(1);
-  });
-});
-
-describe("isTransientRunFailure", () => {
-  const base = { id: "r", model: { id: "composer-2" } } as any;
-
-  it("returns true for status=error + no result + no tool calls observed", () => {
-    expect(
-      isTransientRunFailure({ ...base, status: "error", durationMs: 8_900 }, 0),
-    ).toBe(true);
-  });
-
-  it("returns true regardless of durationMs when no tools ran", () => {
-    expect(isTransientRunFailure({ ...base, status: "error" }, 0)).toBe(true);
-  });
-
-  it("returns false when status is finished", () => {
-    expect(
-      isTransientRunFailure({ ...base, status: "finished", durationMs: 2_500 }, 0),
-    ).toBe(false);
-  });
-
-  it("returns false when result text is present (server reported an error)", () => {
-    expect(
-      isTransientRunFailure(
-        {
-          ...base,
-          status: "error",
-          result: "boom",
-          durationMs: 2_500,
-        },
-        0,
-      ),
-    ).toBe(false);
-  });
-
-  it("returns false when tool calls were observed (side effects possible)", () => {
-    expect(
-      isTransientRunFailure({ ...base, status: "error", durationMs: 2_500 }, 3),
-    ).toBe(false);
-  });
-
-  it("returns false when error.message is present (e.g. provider content block)", () => {
-    expect(
-      isTransientRunFailure(
-        {
-          ...base,
-          status: "error",
-          error: { message: "Request blocked" },
-          durationMs: 6_700,
-        },
-        0,
-      ),
-    ).toBe(false);
-  });
-
-  it("returns true for the backend stale-auth error text", () => {
-    expect(
-      isTransientRunFailure(
-        {
-          ...base,
-          status: "error",
-          error: {
-            message:
-              "Authentication error If you are logged in, try logging out and back in.",
-          },
-          durationMs: 2_215,
-        },
-        0,
-      ),
-    ).toBe(true);
-  });
-
-  it("returns false for stale-auth text once tool calls were observed", () => {
-    expect(
-      isTransientRunFailure(
-        {
-          ...base,
-          status: "error",
-          error: { message: "Authentication error" },
-          durationMs: 2_215,
-        },
-        2,
-      ),
-    ).toBe(false);
-  });
-});
-
-describe("isStaleAuthRunError", () => {
-  const base = { id: "r", status: "error", model: { id: "composer-2" } } as any;
-
-  it("matches the backend text case-insensitively", () => {
-    expect(
-      isStaleAuthRunError({
-        ...base,
-        error: {
-          message:
-            "Authentication error If you are logged in, try logging out and back in.",
-        },
-      }),
-    ).toBe(true);
-  });
-
-  it("does not match unrelated error text", () => {
-    expect(
-      isStaleAuthRunError({ ...base, error: { message: "Request blocked" } }),
-    ).toBe(false);
-  });
-
-  it("does not match when there is no error text at all", () => {
-    expect(isStaleAuthRunError({ ...base })).toBe(false);
-  });
-});
-
-describe("sendMessage retry on transient run-end error", () => {
-  const channelId = "transient-test-ch";
-
-  function makeAgent(agentId = "agent-1") {
-    const run: any = {
-      stream: vi.fn(() => (async function* () {})()),
-      wait: vi.fn().mockResolvedValue({
-        id: "run-default",
-        status: "finished",
-        result: "ok",
-        durationMs: 100,
-      }),
-      cancel: vi.fn().mockResolvedValue(undefined),
-    };
-    return {
-      agentId,
-      send: vi.fn().mockResolvedValue(run),
-      close: vi.fn(),
-      _run: run,
-    };
-  }
-
-  beforeEach(async () => {
-    vi.clearAllMocks();
     const db = await import("../db/database.js");
-    (db.getProject as any).mockReturnValue({
-      id: "p1",
-      channel_id: channelId,
-      project_path: "/tmp/transient-test",
-    });
+    expect(db.updateSessionStatus).toHaveBeenCalledWith(channelId, "idle");
+    expect(session.dispose).toHaveBeenCalled();
+  });
+
+  it("resumes from DB session file and pins the bot model", async () => {
+    const db = await import("../db/database.js");
     (db.getSession as any).mockReturnValue({
       id: "db-1",
-      agent_id: "agent-1",
+      pi_session_file: "/sessions/old.jsonl",
     });
-    const selfHeal = await import("../utils/self-heal.js");
-    (selfHeal.isRestartScheduled as any).mockReturnValue(false);
-  });
-
-  afterEach(async () => {
-    if (sessionManager.isActive(channelId)) {
-      await sessionManager.stopSession(channelId);
-    }
-  });
-
-  it("retries once when run.wait() returns transient error, then succeeds silently", async () => {
-    const resume = (await import("@cursor/sdk")).Agent.resume as any;
-    const first = makeAgent("agent-1");
-    first._run.wait.mockResolvedValueOnce({
-      id: "run-transient",
-      status: "error",
-      result: undefined,
-      durationMs: 2_500,
-    });
-    const second = makeAgent("agent-1");
-    resume.mockResolvedValueOnce(first).mockResolvedValueOnce(second);
-
+    const { pi, session } = await setupPiMocks();
     const channel = mockChannel(channelId);
     await sessionManager.sendMessage(channel, "hello");
 
-    expect(resume).toHaveBeenCalledTimes(2);
-    expect(first.close).toHaveBeenCalled();
-    expect(second.send).toHaveBeenCalledTimes(1);
+    expect(pi.SessionManager.open).toHaveBeenCalledWith("/sessions/old.jsonl");
+    expect(session.setModel).toHaveBeenCalledTimes(1);
+    expect(session.prompt).toHaveBeenCalledWith("hello");
+  });
+
+  it("sends ❌ and marks offline when prompt() throws", async () => {
+    await setupPiMocks({ prompt: vi.fn().mockRejectedValue(new Error("provider boom")) });
+    const channel = mockChannel(channelId);
+    await sessionManager.sendMessage(channel, "hello");
 
     const sent = (channel.send as any).mock.calls.map((c: any[]) => c[0]);
     const errs = sent.filter(
-      (m: any) => typeof m === "string" && /^[❌⚠️]/u.test(m),
+      (m: any) => typeof m === "string" && m.startsWith("❌"),
     );
-    expect(errs).toHaveLength(0);
+    expect(errs).toHaveLength(1);
+    expect(errs[0]).toContain("provider boom");
+
+    const db = await import("../db/database.js");
+    expect(db.updateSessionStatus).toHaveBeenCalledWith(channelId, "offline");
   });
 
-  it("does not retry when run.wait() error has server result text (fatal)", async () => {
-    const resume = (await import("@cursor/sdk")).Agent.resume as any;
-    const agent = makeAgent("agent-1");
-    agent._run.wait.mockResolvedValue({
-      id: "run-fatal",
-      status: "error",
-      result: "Server-side limit exceeded",
-      durationMs: 1_000,
+  it("treats abort during prompt as user stop: no embed, stays offline", async () => {
+    const { session } = await setupPiMocks({
+      prompt: vi.fn(
+        () => new Promise((_, rej) => setTimeout(() => rej(new Error("aborted")), 30)),
+      ),
     });
-    resume.mockResolvedValueOnce(agent);
-
     const channel = mockChannel(channelId);
-    await sessionManager.sendMessage(channel, "hello");
+    const flight = sessionManager.sendMessage(channel, "hello");
+    await new Promise((r) => setTimeout(r, 5));
+    const stopped = await sessionManager.stopSession(channelId);
+    expect(stopped).toBe(true);
+    expect(session.abort).toHaveBeenCalled();
+    await flight;
 
-    expect(resume).toHaveBeenCalledTimes(1);
-    expect(agent.send).toHaveBeenCalledTimes(1);
+    const formatter = await import("./output-formatter.js");
+    expect(formatter.createResultEmbed).not.toHaveBeenCalled();
 
-    const sent = (channel.send as any).mock.calls.map((c: any[]) => c[0]);
-    const matched = sent.find(
-      (m: any) =>
-        typeof m === "string" && /Server-side limit exceeded/.test(m),
-    );
-    expect(matched).toBeDefined();
-  });
-
-  it("does not retry when tool_call events were observed (side effects possible)", async () => {
-    const resume = (await import("@cursor/sdk")).Agent.resume as any;
-    const agent = makeAgent("agent-1");
-    agent._run.stream = vi.fn(() =>
-      (async function* () {
-        yield {
-          type: "tool_call",
-          status: "running",
-          name: "shell",
-          args: {},
-        };
-      })(),
-    );
-    agent._run.wait.mockResolvedValue({
-      id: "run-long",
-      status: "error",
-      result: undefined,
-      durationMs: 12_000,
-    });
-    resume.mockResolvedValueOnce(agent);
-
-    const channel = mockChannel(channelId);
-    await sessionManager.sendMessage(channel, "hello");
-
-    expect(resume).toHaveBeenCalledTimes(1);
-    expect(agent.send).toHaveBeenCalledTimes(1);
-
-    const sent = (channel.send as any).mock.calls.map((c: any[]) => c[0]);
-    const errs = sent.filter(
-      (m: any) => typeof m === "string" && /^❌/.test(m),
-    );
-    expect(errs.length).toBeGreaterThanOrEqual(1);
-  });
-
-  it("surfaces ❌ when transient retry also returns transient error", async () => {
-    const resume = (await import("@cursor/sdk")).Agent.resume as any;
-    const first = makeAgent("agent-1");
-    first._run.wait.mockResolvedValueOnce({
-      id: "run-1",
-      status: "error",
-      result: undefined,
-      durationMs: 2_500,
-    });
-    const second = makeAgent("agent-1");
-    second._run.wait.mockResolvedValueOnce({
-      id: "run-2",
-      status: "error",
-      result: undefined,
-      durationMs: 2_500,
-    });
-    resume.mockResolvedValueOnce(first).mockResolvedValueOnce(second);
-
-    const channel = mockChannel(channelId);
-    await sessionManager.sendMessage(channel, "hello");
-
-    expect(resume).toHaveBeenCalledTimes(2);
-    const sent = (channel.send as any).mock.calls.map((c: any[]) => c[0]);
-    const errs = sent.filter(
-      (m: any) => typeof m === "string" && /^❌/.test(m),
-    );
-    expect(errs.length).toBeGreaterThanOrEqual(1);
-    const selfHeal: any = await import("../utils/self-heal.js");
-    expect(selfHeal.maybeSelfRestart).toHaveBeenCalledTimes(1);
+    const db = await import("../db/database.js");
+    expect(db.updateSessionStatus).toHaveBeenCalledWith(channelId, "offline");
   });
 });
 
-describe("formatToolDetail (Cursor tools)", () => {
-  it("returns [type] description for task with subagent_type", () => {
-    expect(
-      formatToolDetail("task", {
-        description: "explore code",
-        subagent_type: "researcher",
-      }),
-    ).toBe("[researcher] explore code");
-  });
-
-  it("returns description for task without subagent_type", () => {
-    expect(formatToolDetail("task", { description: "explore code" })).toBe(
-      "explore code",
-    );
-  });
-
-  it("truncates task description at 80 chars", () => {
-    const long = "x".repeat(100);
-    expect(formatToolDetail("task", { description: long })).toBe("x".repeat(80));
-  });
-
-  it("returns backtick-wrapped command for shell tool", () => {
-    expect(formatToolDetail("shell", { command: "ls -la" })).toBe("`ls -la`");
+describe("formatToolDetail (Pi tools)", () => {
+  it("returns backtick-wrapped command for bash", () => {
+    expect(formatToolDetail("bash", { command: "ls -la" })).toBe("`ls -la`");
   });
 
   it("truncates command at 100 chars", () => {
     const long = "x".repeat(150);
-    expect(formatToolDetail("shell", { command: long })).toBe(
+    expect(formatToolDetail("bash", { command: long })).toBe(
       "`" + "x".repeat(100) + "`",
     );
   });
 
-  it("returns backtick-wrapped file_path for read/write/edit", () => {
-    expect(formatToolDetail("read", { file_path: "/a/b.ts" })).toBe("`/a/b.ts`");
-    expect(formatToolDetail("write", { file_path: "/a/b.ts" })).toBe("`/a/b.ts`");
-    expect(formatToolDetail("edit", { file_path: "/a/b.ts" })).toBe("`/a/b.ts`");
-  });
-
-  it("returns backtick-wrapped path for ls", () => {
+  it("returns backtick-wrapped path for read/write/edit/ls", () => {
+    expect(formatToolDetail("read", { path: "/a/b.ts" })).toBe("`/a/b.ts`");
+    expect(formatToolDetail("write", { path: "/a/b.ts" })).toBe("`/a/b.ts`");
+    expect(formatToolDetail("edit", { path: "/a/b.ts" })).toBe("`/a/b.ts`");
     expect(formatToolDetail("ls", { path: "/src" })).toBe("`/src`");
   });
 
-  it("returns pattern with path for grep", () => {
-    expect(formatToolDetail("grep", { pattern: "*.ts", path: "/src" })).toBe(
-      "`*.ts` in `/src`",
+  it("returns pattern with path for grep/find", () => {
+    expect(formatToolDetail("grep", { pattern: "foo", path: "/src" })).toBe(
+      "`foo` in `/src`",
     );
-  });
-
-  it("returns pattern alone for glob", () => {
-    expect(formatToolDetail("glob", { pattern: "**/*.ts" })).toBe("`**/*.ts`");
-  });
-
-  it("returns quoted query for semSearch", () => {
-    expect(formatToolDetail("semSearch", { query: "auth flow" })).toBe(
-      '"auth flow"',
-    );
+    expect(formatToolDetail("find", { pattern: "**/*.ts" })).toBe("`**/*.ts`");
   });
 
   it("returns url truncated at 120 chars", () => {
     const long = "https://" + "x".repeat(150);
-    const result = formatToolDetail("mcp", { url: long });
+    const result = formatToolDetail("custom", { url: long });
     expect(result.length).toBe(120);
   });
 
@@ -645,75 +304,43 @@ describe("formatToolDetail (Cursor tools)", () => {
 
   it("command takes priority over generic description", () => {
     expect(
-      formatToolDetail("shell", { command: "ls", description: "list files" }),
+      formatToolDetail("bash", { command: "ls", description: "list files" }),
     ).toBe("`ls`");
   });
 });
 
+describe("extractAssistantText", () => {
+  it("returns the last assistant text message", () => {
+    const messages = [
+      { role: "user", content: [{ type: "text", text: "hi" }] },
+      { role: "assistant", content: [{ type: "text", text: "first" }] },
+      { role: "assistant", content: [{ type: "text", text: "second" }] },
+    ];
+    expect(extractAssistantText(messages)).toBe("second");
+  });
+
+  it("skips thinking-only assistant messages", () => {
+    const messages = [
+      {
+        role: "assistant",
+        content: [{ type: "thinking", thinking: "..." }],
+      },
+      { role: "assistant", content: [{ type: "text", text: "answer" }] },
+    ];
+    expect(extractAssistantText(messages)).toBe("answer");
+  });
+
+  it("returns empty string when no assistant text exists", () => {
+    expect(extractAssistantText([])).toBe("");
+    expect(
+      extractAssistantText([{ role: "user", content: "hi" }]),
+    ).toBe("");
+  });
+});
+
 describe("parseApiError", () => {
-  it("extracts error.message from API error JSON", () => {
-    const input = 'API Error: 429 {"error":{"message":"rate limited"}}';
-    expect(parseApiError(input)).toBe(
-      "API Error 429: rate limited. Please try again later.",
-    );
-  });
-
-  it("extracts top-level message from API error JSON", () => {
-    const input = 'API Error: 500 {"message":"internal"}';
-    expect(parseApiError(input)).toBe(
-      "API Error 500: internal. Please try again later.",
-    );
-  });
-
-  it("falls back to status code for unparseable JSON", () => {
-    const input = "API Error: 502 {bad json}";
-    expect(parseApiError(input)).toBe("API Error 502. Please try again later.");
-  });
-
-  it("appends retry suggestion for process exit errors", () => {
-    const input = "process exited with code 1";
-    expect(parseApiError(input)).toContain("temporarily unavailable");
-  });
-
   it("returns raw message for unknown errors", () => {
     expect(parseApiError("Something broke")).toBe("Something broke");
-  });
-
-  it("handles multiline JSON body (dotall flag)", () => {
-    const input = 'API Error: 429\n{"error":{"message":"wait"}}';
-    expect(parseApiError(input)).toBe(
-      "API Error 429: wait. Please try again later.",
-    );
-  });
-
-  it("returns admin-restart hint for unauthenticated ConnectError", () => {
-    const result = parseApiError("[unauthenticated] Error");
-    expect(result).toContain("contact the admin");
-    expect(result).toContain("unauthenticated");
-  });
-
-  it("returns retry hint for unavailable ConnectError without admin mention", () => {
-    const result = parseApiError("[unavailable] service down");
-    expect(result).toContain("temporarily unavailable");
-    expect(result).not.toContain("admin");
-  });
-
-  it("returns generic hint with code for unknown ConnectError codes", () => {
-    const result = parseApiError("[permission_denied] denied");
-    expect(result).toContain("permission_denied");
-    expect(result.toLowerCase()).toContain("connection error");
-  });
-
-  it("returns retry hint for deadline_exceeded ConnectError without admin mention", () => {
-    const result = parseApiError("[deadline_exceeded] timeout");
-    expect(result).toContain("temporarily unavailable");
-    expect(result).not.toContain("admin");
-  });
-
-  it("handles ConnectError class-name prefix", () => {
-    const result = parseApiError("ConnectError: [unauthenticated] Error");
-    expect(result).toContain("contact the admin");
-    expect(result).toContain("unauthenticated");
   });
 
   it("trims long multi-line unknown errors to short summary", () => {
@@ -729,32 +356,5 @@ describe("parseApiError", () => {
     expect(result.toLowerCase()).toContain("unexpected internal error");
     expect(result).toContain("TypeError: something blew up");
     expect(result).not.toContain("frame3");
-  });
-});
-
-describe("isConnectError", () => {
-  it("identifies a real ConnectError instance", () => {
-    const err = new ConnectError("boom", Code.Unauthenticated);
-    expect(isConnectError(err)).toBe(true);
-  });
-
-  it("identifies a duck-typed Error with name ConnectError", () => {
-    const err = Object.assign(new Error("[unauthenticated] x"), {
-      name: "ConnectError",
-      code: 16,
-      rawMessage: "x",
-    });
-    expect(isConnectError(err)).toBe(true);
-  });
-
-  it("rejects a plain Error", () => {
-    expect(isConnectError(new Error("nope"))).toBe(false);
-  });
-
-  it("rejects non-Error values", () => {
-    expect(isConnectError("string")).toBe(false);
-    expect(isConnectError(null)).toBe(false);
-    expect(isConnectError(undefined)).toBe(false);
-    expect(isConnectError({ name: "ConnectError" })).toBe(false);
   });
 });

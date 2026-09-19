@@ -19,11 +19,9 @@ describe("config", () => {
     process.env.DISCORD_GUILD_ID = "test-guild";
     process.env.ALLOWED_USER_IDS = "user1,user2";
     process.env.BASE_PROJECT_DIR = "/projects";
-    process.env.CURSOR_API_KEY = "test-cursor-key";
     delete process.env.RATE_LIMIT_PER_MINUTE;
     delete process.env.SHOW_COST;
-    delete process.env.CURSOR_MODEL;
-    delete process.env.CURSOR_MODEL_PARAMS;
+    delete process.env.PI_MODEL;
     delete process.env.THREAD_PROGRESS;
   });
 
@@ -38,7 +36,6 @@ describe("config", () => {
     expect(config.DISCORD_GUILD_ID).toBe("test-guild");
     expect(config.ALLOWED_USER_IDS).toEqual(["user1", "user2"]);
     expect(config.BASE_PROJECT_DIR).toBe("/projects");
-    expect(config.CURSOR_API_KEY).toBe("test-cursor-key");
   });
 
   it("uses default values for optional fields", async () => {
@@ -46,8 +43,9 @@ describe("config", () => {
     const config = loadConfig();
     expect(config.RATE_LIMIT_PER_MINUTE).toBe(10);
     expect(config.SHOW_COST).toBe(true);
-    expect(config.CURSOR_MODEL).toBe("composer-2");
-    expect(config.CURSOR_MODEL_PARAMS).toBeUndefined();
+    expect(config.PI_MODEL).toBe(
+      "openrouter/meta/muse-spark-1.3-contributor:medium",
+    );
     expect(config.THREAD_PROGRESS).toBe(false);
   });
 
@@ -77,11 +75,6 @@ describe("config", () => {
     await expectConfigExit();
   });
 
-  it("calls process.exit(1) when CURSOR_API_KEY missing", async () => {
-    delete process.env.CURSOR_API_KEY;
-    await expectConfigExit();
-  });
-
   it("getConfig returns cached config on second call", async () => {
     const { loadConfig, getConfig } = await import("./config.js");
     const first = loadConfig();
@@ -95,49 +88,11 @@ describe("config", () => {
     expect(config.DISCORD_BOT_TOKEN).toBe("test-token");
   });
 
-  describe("CURSOR_MODEL", () => {
-    it("accepts custom model value", async () => {
-      process.env.CURSOR_MODEL = "claude-opus-4-7";
+  describe("PI_MODEL", () => {
+    it("accepts custom model spec value", async () => {
+      process.env.PI_MODEL = "anthropic/claude-opus-4-5:high";
       const { loadConfig } = await import("./config.js");
-      expect(loadConfig().CURSOR_MODEL).toBe("claude-opus-4-7");
-    });
-  });
-
-  describe("CURSOR_MODEL_PARAMS", () => {
-    it("returns undefined when not set", async () => {
-      const { loadConfig } = await import("./config.js");
-      expect(loadConfig().CURSOR_MODEL_PARAMS).toBeUndefined();
-    });
-
-    it("returns undefined for empty string", async () => {
-      process.env.CURSOR_MODEL_PARAMS = "";
-      const { loadConfig } = await import("./config.js");
-      expect(loadConfig().CURSOR_MODEL_PARAMS).toBeUndefined();
-    });
-
-    it("parses JSON array of {id,value} objects", async () => {
-      process.env.CURSOR_MODEL_PARAMS =
-        '[{"id":"thinking","value":"high"},{"id":"fast","value":"on"}]';
-      const { loadConfig } = await import("./config.js");
-      expect(loadConfig().CURSOR_MODEL_PARAMS).toEqual([
-        { id: "thinking", value: "high" },
-        { id: "fast", value: "on" },
-      ]);
-    });
-
-    it("rejects non-JSON string", async () => {
-      process.env.CURSOR_MODEL_PARAMS = "thinking-high";
-      await expectConfigExit();
-    });
-
-    it("rejects JSON object (not array)", async () => {
-      process.env.CURSOR_MODEL_PARAMS = '{"x":1}';
-      await expectConfigExit();
-    });
-
-    it("rejects array with bare strings", async () => {
-      process.env.CURSOR_MODEL_PARAMS = '["thinking-high"]';
-      await expectConfigExit();
+      expect(loadConfig().PI_MODEL).toBe("anthropic/claude-opus-4-5:high");
     });
   });
 

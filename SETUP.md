@@ -178,8 +178,8 @@ SHOW_COST=true
 | `ALLOWED_USER_IDS` | User ID from step 4 | `942037337519575091` |
 | `BASE_PROJECT_DIR` | Parent directory of your projects | `/Users/you/projects` |
 | `RATE_LIMIT_PER_MINUTE` | Message rate limit (default 10) | `10` |
-| `SHOW_COST` | Show estimated API cost in results (default true) | `false` |
-| `AUTO_RESTART_ON_AUTH_ERROR` | Auto-restart on Cursor SDK code 16 / unauthenticated so PM2 brings up a clean process (default true) | `false` |
+| `SHOW_COST` | Show API cost in results (default true) | `false` |
+| `PI_MODEL` | Pi model in `provider/id[:thinkingLevel]` format (default `openrouter/meta/muse-spark-1.3-contributor:medium`) | `anthropic/claude-opus-4-5:high` |
 
 `BASE_PROJECT_DIR` is the base path when using folder names in `/register`.
 Example: If `BASE_PROJECT_DIR=/Users/you/projects`, then `/register my-app` → `/Users/you/projects/my-app`
