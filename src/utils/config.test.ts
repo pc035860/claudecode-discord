@@ -44,7 +44,7 @@ describe("config", () => {
     expect(config.RATE_LIMIT_PER_MINUTE).toBe(10);
     expect(config.SHOW_COST).toBe(true);
     expect(config.PI_MODEL).toBe(
-      "accounts/fireworks/models/glm-5p3-flash:medium",
+      "accounts/fireworks/models/deepseek-v4p1-flash:medium",
     );
     expect(config.THREAD_PROGRESS).toBe(false);
   });

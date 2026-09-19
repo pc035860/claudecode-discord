@@ -14,7 +14,7 @@ vi.mock("../db/database.js", () => ({
 vi.mock("../utils/config.js", () => ({
   getConfig: vi.fn(() => ({
     SHOW_COST: true,
-    PI_MODEL: "accounts/fireworks/models/glm-5p3-flash:medium",
+    PI_MODEL: "accounts/fireworks/models/deepseek-v4p1-flash:medium",
     THREAD_PROGRESS: false,
   })),
 }));
@@ -50,6 +50,7 @@ import {
   parseApiError,
   extractAssistantText,
   loadPersonaText,
+  listOutputStyles,
 } from "./session-manager.js";
 
 function mockChannel(id: string) {
@@ -376,6 +377,15 @@ describe("loadPersonaText", () => {
 
   it("sanitizes path traversal attempts", () => {
     expect(loadPersonaText("../../package")).toContain("席德");
+  });
+});
+
+describe("listOutputStyles", () => {
+  it("lists seed and ruru", () => {
+    const styles = listOutputStyles();
+    expect(styles).toContain("seed");
+    expect(styles).toContain("ruru");
+    expect(styles).toEqual([...styles].sort());
   });
 });
 

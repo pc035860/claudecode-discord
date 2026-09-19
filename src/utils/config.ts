@@ -14,13 +14,13 @@ const envSchema = z.object({
     .default("true")
     .transform((v) => v === "true"),
   // Pi Agent SDK model spec in pi CLI format: "provider/model-id[:thinkingLevel]"
-  // e.g. "accounts/fireworks/models/glm-5p3-flash:medium". The :level
+  // e.g. "accounts/fireworks/models/deepseek-v4p1-flash:medium". The :level
   // suffix is required — without it the session falls back to the user's
   // ~/.pi/agent/settings.json defaultThinkingLevel. Auth comes from
   // ~/.pi/agent/auth.json via ModelRuntime (no env key needed).
   PI_MODEL: z
     .string()
-    .default("accounts/fireworks/models/glm-5p3-flash:medium"),
+    .default("accounts/fireworks/models/deepseek-v4p1-flash:medium"),
   THREAD_PROGRESS: z
     .enum(["true", "false"])
     .default("false")
