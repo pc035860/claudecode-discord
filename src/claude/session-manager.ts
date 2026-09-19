@@ -134,6 +134,25 @@ export async function getBotModel(): Promise<NonNullable<ResolveCliModelResult["
   return botModelSpec.model as NonNullable<ResolveCliModelResult["model"]>;
 }
 
+// Style names available for autocomplete (rules/output-styles/*.md basenames).
+// Same candidate depths as loadPersonaText (tsx src/ vs bundled dist/).
+export function listOutputStyles(): string[] {
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  const depths = [path.join(here, "..", ".."), path.join(here, "..")];
+  for (const base of depths) {
+    try {
+      return fs
+        .readdirSync(path.join(base, "rules", "output-styles"))
+        .filter((f) => f.endsWith(".md"))
+        .map((f) => f.slice(0, -3))
+        .sort();
+    } catch {
+      // try next candidate
+    }
+  }
+  return [];
+}
+
 // Persona text for a channel's output style (rules/output-styles/<name>.md).
 // Sanitized + fallback chain: requested -> seed -> empty (matches the
 // pre-Cursor /output-styles behavior).

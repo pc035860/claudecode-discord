@@ -83,6 +83,11 @@ export function getProject(channelId: string): Project | undefined {
     .get(channelId) as Project | undefined;
 }
 
+export function setOutputStyle(channelId: string, style: string): void {
+  db.prepare("UPDATE projects SET output_style = ? WHERE channel_id = ?")
+    .run(style, channelId);
+}
+
 export function getAllProjects(guildId: string): Project[] {
   return db
     .prepare("SELECT * FROM projects WHERE guild_id = ?")

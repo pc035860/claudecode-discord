@@ -24,8 +24,9 @@ import * as newCmd from "./commands/new.js";
 import * as modelsCmd from "./commands/models.js";
 import * as renameSessionCmd from "./commands/rename-session.js";
 import * as usageCmd from "./commands/usage.js";
+import * as outputStylesCmd from "./commands/output-styles.js";
 
-const commands = [registerCmd, unregisterCmd, statusCmd, stopCmd, sessionsCmd, queueCmd, newCmd, modelsCmd, renameSessionCmd, usageCmd];
+const commands = [registerCmd, unregisterCmd, statusCmd, stopCmd, sessionsCmd, queueCmd, newCmd, modelsCmd, renameSessionCmd, usageCmd, outputStylesCmd];
 const commandMap = new Collection<
   string,
   { execute: (interaction: ChatInputCommandInteraction) => Promise<void> }

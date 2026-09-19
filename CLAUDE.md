@@ -41,7 +41,7 @@ pm2 save
 
 ## 必要環境變數
 
-- `PI_MODEL`（選用，預設 `accounts/fireworks/models/glm-5p3-flash:medium` — pi CLI 格式 `provider/id[:thinkingLevel]`，`:level` 必帶否則 fallback 到 `~/.pi/agent/settings.json` 的 defaultThinkingLevel）
+- `PI_MODEL`（選用，預設 `accounts/fireworks/models/deepseek-v4p1-flash:medium` — pi CLI 格式 `provider/id[:thinkingLevel]`，`:level` 必帶否則 fallback 到 `~/.pi/agent/settings.json` 的 defaultThinkingLevel）
 - Auth 不走 env：`ModelRuntime.create()` 預設讀 `~/.pi/agent/auth.json` + `models.json`
 
 ## Bot Commands
@@ -55,6 +55,7 @@ pm2 save
 - `/status` — 列出所有頻道狀態
 - `/queue` — 管理排隊訊息
 - `/models` — 列出可用模型（`modelRuntime.getAvailable()`，只顯示有認證的 provider）
+- `/output-styles` — 切換該頻道的人格（`projects.output_style`，讀 `rules/output-styles/<name>.md`，下則訊息生效，對話保留）
 - `/usage` — Claude Code 配額顯示（與本 bot SDK 無關，獨立 OAuth）
 
 ## Pi SDK 整合
@@ -88,7 +89,7 @@ Pi 版恢復了 Cursor MVP 砍掉的三項：`/rename-session`（`setSessionName
 仍維持修剪：
 - ❌ Per-tool 互動式核准 — 走 full-allow（但 SDK 的 extension `tool_call` event 有 `{ block, reason }` hook，未來可用 `extensionFactories` 接 tool-gating）
 - ❌ `/auto-approve` 指令、AskUserQuestion 互動 UI
-- ❌ `/last`、`/clear-sessions`、`/output-styles` 指令
+- ❌ `/last`、`/clear-sessions` 指令
 
 ## 附件上傳功能
 
