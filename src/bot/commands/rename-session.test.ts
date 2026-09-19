@@ -55,6 +55,7 @@ describe("/rename-session command", () => {
       channel_id: "ch-1",
       project_path: "/tmp",
       guild_id: "g-1",
+      output_style: "seed",
       created_at: "",
     });
     vi.mocked(sessionManager.isActive).mockReturnValue(true);
@@ -72,6 +73,7 @@ describe("/rename-session command", () => {
       channel_id: "ch-1",
       project_path: "/tmp",
       guild_id: "g-1",
+      output_style: "seed",
       created_at: "",
     });
     vi.mocked(getSession).mockReturnValue({

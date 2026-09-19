@@ -68,7 +68,7 @@ export async function execute(
     const { session } = await createAgentSession({
       cwd,
       modelRuntime: runtime,
-      resourceLoader: await getResourceLoader(cwd),
+      resourceLoader: await getResourceLoader(cwd, project.output_style),
       sessionManager: sessionFile
         ? PiSessionManager.open(sessionFile)
         : PiSessionManager.create(cwd),

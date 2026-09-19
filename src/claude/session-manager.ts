@@ -61,10 +61,6 @@ interface ActiveSession {
   cancelRequested: boolean;
 }
 
-// Pi built-ins enabled for the bot. Default would be read/bash/edit/write;
-// grep/find/ls restore parity with what the Cursor engine offered.
-const BOT_TOOLS = ["read", "bash", "edit", "write", "grep", "find", "ls"];
-
 // Thunks so L() reads .tray-lang at call time (live language switch).
 const TOOL_LABELS: Record<string, () => string> = {
   read: () => L("Reading files", "파일 읽는 중"),
@@ -74,7 +70,19 @@ const TOOL_LABELS: Record<string, () => string> = {
   grep: () => L("Searching code", "코드 검색 중"),
   find: () => L("Searching files", "파일 검색 중"),
   ls: () => L("Listing files", "파일 목록 보기"),
+  todo: () => L("Managing tasks", "작업 관리 중"),
+  subagent: () => L("Spawning subagent", "서브에이전트 시작 중"),
+  mcp: () => L("Calling MCP tool", "MCP 도구 호출 중"),
 };
+
+// Fallback detail for tools with unknown arg shapes (MCP/extension tools):
+// first short string value, so the thread never shows a bare tool name.
+function firstStringDetail(input: Record<string, unknown>): string {
+  for (const v of Object.values(input)) {
+    if (typeof v === "string" && v.length > 0 && v.length <= 120) return v;
+  }
+  return "";
+}
 
 export function formatToolDetail(_name: string, input: Record<string, unknown>): string {
   if (typeof input.command === "string") return `\`${input.command.slice(0, 100)}\``;
@@ -83,9 +91,15 @@ export function formatToolDetail(_name: string, input: Record<string, unknown>):
     return `\`${input.pattern}\`${pathSuffix}`;
   }
   if (typeof input.path === "string") return `\`${input.path}\``;
+  if (typeof input.query === "string") return `"${input.query.slice(0, 80)}"`;
+  if (typeof input.subject === "string") {
+    const action = typeof input.action === "string" ? `${input.action}: ` : "";
+    return `${action}${input.subject}`.slice(0, 100);
+  }
+  if (typeof input.task === "string") return input.task.slice(0, 80);
   if (typeof input.url === "string") return `${input.url.slice(0, 120)}`;
   if (typeof input.description === "string") return `${input.description.slice(0, 80)}`;
-  return "";
+  return firstStringDetail(input);
 }
 
 // --- Shared Pi runtime (process-wide) ---
@@ -120,14 +134,42 @@ export async function getBotModel(): Promise<NonNullable<ResolveCliModelResult["
   return botModelSpec.model as NonNullable<ResolveCliModelResult["model"]>;
 }
 
-export async function getResourceLoader(cwd: string): Promise<DefaultResourceLoader> {
-  const key = fs.realpathSync(cwd);
+// Persona text for a channel's output style (rules/output-styles/<name>.md).
+// Sanitized + fallback chain: requested -> seed -> empty (matches the
+// pre-Cursor /output-styles behavior).
+export function loadPersonaText(style: string | null | undefined): string {
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  const depths = [path.join(here, "..", ".."), path.join(here, "..")];
+  const clean = (style || "seed").replace(/[^A-Za-z0-9_-]/g, "") || "seed";
+  for (const name of [clean, "seed"]) {
+    for (const base of depths) {
+      try {
+        const text = fs
+          .readFileSync(path.join(base, "rules", "output-styles", `${name}.md`), "utf8")
+          .trim();
+        if (text) return text;
+      } catch {
+        // try next candidate
+      }
+    }
+  }
+  return "";
+}
+
+export async function getResourceLoader(
+  cwd: string,
+  style: string | null | undefined,
+): Promise<DefaultResourceLoader> {
+  const key = `${fs.realpathSync(cwd)}::${style ?? ""}`;
   const cached = loaderCache.get(key);
   if (cached) return cached;
+  // Append (never replace): Pi's own system prompt + tool guidelines stay
+  // intact; BOT.md + persona ride along after them.
+  const extras = [BOT_RULES, loadPersonaText(style)].filter((s) => s.length > 0);
   const loader = new DefaultResourceLoader({
     cwd,
     agentDir: getAgentDir(),
-    ...(BOT_RULES ? { systemPromptOverride: () => BOT_RULES } : {}),
+    appendSystemPromptOverride: (base) => [...base, ...extras],
   });
   await loader.reload();
   loaderCache.set(key, loader);
@@ -270,14 +312,15 @@ class SessionManager {
       const cwd = fs.realpathSync(project.project_path);
       const runtime = await getModelRuntime();
       const model = await getBotModel();
-      const loader = await getResourceLoader(cwd);
+      const loader = await getResourceLoader(cwd, project.output_style);
 
+      // No `tools` allowlist: the bot gets everything the loader discovers
+      // (built-ins + extensions + MCP tools), same as the pi CLI.
       const { session, modelFallbackMessage } = await createAgentSession({
         cwd,
         model,
         thinkingLevel: botModelSpec?.thinkingLevel,
         modelRuntime: runtime,
-        tools: BOT_TOOLS,
         resourceLoader: loader,
         sessionManager: resumeFile
           ? PiSessionManager.open(resumeFile)

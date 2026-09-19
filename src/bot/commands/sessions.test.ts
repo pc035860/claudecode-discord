@@ -66,6 +66,7 @@ describe("/sessions command", () => {
       channel_id: "ch-1",
       project_path: "/tmp",
       guild_id: "g-1",
+      output_style: "seed",
       created_at: "",
     });
     vi.mocked(PiSessionManager.list).mockResolvedValue([]);
@@ -80,6 +81,7 @@ describe("/sessions command", () => {
       channel_id: "ch-1",
       project_path: "/tmp",
       guild_id: "g-1",
+      output_style: "seed",
       created_at: "",
     });
     vi.mocked(getSession).mockReturnValue({
@@ -115,6 +117,7 @@ describe("/sessions command", () => {
       channel_id: "ch-1",
       project_path: "/tmp",
       guild_id: "g-1",
+      output_style: "seed",
       created_at: "",
     });
     vi.mocked(getSession).mockReturnValue(undefined);
@@ -132,6 +135,7 @@ describe("/sessions command", () => {
       channel_id: "ch-1",
       project_path: "/tmp",
       guild_id: "g-1",
+      output_style: "seed",
       created_at: "",
     });
     vi.mocked(PiSessionManager.list).mockRejectedValue(new Error("disk down"));

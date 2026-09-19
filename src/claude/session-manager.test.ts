@@ -49,6 +49,7 @@ import {
   formatToolDetail,
   parseApiError,
   extractAssistantText,
+  loadPersonaText,
 } from "./session-manager.js";
 
 function mockChannel(id: string) {
@@ -292,6 +293,30 @@ describe("formatToolDetail (Pi tools)", () => {
     expect(formatToolDetail("find", { pattern: "**/*.ts" })).toBe("`**/*.ts`");
   });
 
+  it("returns quoted query for search tools", () => {
+    expect(formatToolDetail("graph-memory_search_nodes", { query: "Ruru" })).toBe(
+      '"Ruru"',
+    );
+  });
+
+  it("returns action + subject for todo", () => {
+    expect(
+      formatToolDetail("todo", { action: "create", subject: "測試任務" }),
+    ).toBe("create: 測試任務");
+  });
+
+  it("returns truncated task for subagent", () => {
+    const long = "x".repeat(100);
+    expect(formatToolDetail("subagent", { agent: "explore", task: long })).toBe(
+      "x".repeat(80),
+    );
+  });
+
+  it("falls back to first short string for unknown shapes", () => {
+    expect(formatToolDetail("weird", { foo: "hello" })).toBe("hello");
+    expect(formatToolDetail("weird", { n: 42 })).toBe("");
+  });
+
   it("returns url truncated at 120 chars", () => {
     const long = "https://" + "x".repeat(150);
     const result = formatToolDetail("custom", { url: long });
@@ -335,6 +360,22 @@ describe("extractAssistantText", () => {
     expect(
       extractAssistantText([{ role: "user", content: "hi" }]),
     ).toBe("");
+  });
+});
+
+describe("loadPersonaText", () => {
+  it("loads the seed persona by default", () => {
+    expect(loadPersonaText(null)).toContain("席德");
+    expect(loadPersonaText(undefined)).toContain("席德");
+    expect(loadPersonaText("seed")).toContain("席德");
+  });
+
+  it("falls back to seed for unknown styles", () => {
+    expect(loadPersonaText("no-such-style")).toContain("席德");
+  });
+
+  it("sanitizes path traversal attempts", () => {
+    expect(loadPersonaText("../../package")).toContain("席德");
   });
 });
 

@@ -64,6 +64,7 @@ describe("session-delete-select", () => {
     channel_id: "ch-1",
     project_path: "/tmp",
     guild_id: "g-1",
+    output_style: "seed",
     created_at: "",
   };
 

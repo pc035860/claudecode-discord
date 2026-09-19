@@ -66,8 +66,8 @@ const runtime = await ModelRuntime.create(); // ~/.pi/agent/auth.json + models.j
 const { model, thinkingLevel } = resolveCliModel({ cliModel: config.PI_MODEL, modelRuntime });
 const { session } = await createAgentSession({
   cwd, model, thinkingLevel, modelRuntime,
-  tools: ["read", "bash", "edit", "write", "grep", "find", "ls"],
-  resourceLoader, // DefaultResourceLoader + systemPromptOverride(BOT.md)
+  // 不傳 tools：跟 pi CLI 拿完整工具集（built-ins + extensions + MCP）
+  resourceLoader, // DefaultResourceLoader + append(BOT.md + persona)
   sessionManager: resumeFile ? SessionManager.open(resumeFile) : SessionManager.create(cwd),
 });
 if (resumeFile) await session.setModel(model); // resume 一律釘回 bot 預設 model
@@ -110,7 +110,7 @@ Pi 版恢復了 Cursor MVP 砍掉的三項：`/rename-session`（`setSessionName
 - 相關程式碼：`src/claude/thread-reporter.ts`（`ThreadReporter` class）
 - **文字來源**：`message_update` events 的 `text_delta`
 - **工具來源**：`tool_execution_start` events（含 `args`；end/update 階段目前忽略避免重複）
-- Pi 工具名：`read, bash, edit, write, grep, find, ls`（`BOT_TOOLS` 常數，少了就加）
+- 工具：不過濾，loader 發現的全部啟用（built-ins + extensions + MCP，跟 pi CLI 一致）。`TOOL_LABELS` 沒列名的工具顯示 `Using <name>` fallback
 - 事件每 5 秒 batch flush，連續 text delta 會合併成一條 `💬` 訊息
 - 文字合併（coalescing）：連續純文字 flush 會用 `Message.edit()` 合併到前一條 Discord 訊息
 
@@ -121,6 +121,8 @@ Pi 版恢復了 Cursor MVP 砍掉的三項：`/rename-session`（`setSessionName
 ## Gotchas（改動前先讀）
 
 - **Stop race + placeholder pattern** (`session-manager.ts`)：`sendMessage()` 在 `await createAgentSession()` 前就把一個 `placeholder` 寫進 `this.sessions` map（`session` 暫為 null）。`stopSession()` 設 `cancelRequested` flag，session 還沒備好就只翻 flag、sendMessage 每個 await 後檢查 flag 並 bail。`finally` 用 `this.sessions.get(channelId) === placeholder` identity-check 才 delete，避免 stop+新訊息把新 placeholder 刪掉。改動 ActiveSession 狀態時要保留這四點。
+- **better-sqlite3 要 v12（Node 24）**：v11 在 Node 24 下會 `Statement` GC assertion crash 直接殺掉行程（2026-09-19 production 實測）。`package.json` 已升 `^12`，降 Node 或碰 sqlite 版本時注意這條。
+- **system prompt 用 append 不用 replace**：`systemPromptOverride` 會蓋掉 Pi custom slot，一律走 `appendSystemPromptOverride`（BOT.md + persona）。Persona 來自 `projects.output_style`（預設 `seed`，讀 `rules/output-styles/<name>.md`），loader 按 `(cwd, style)` cache — 同專案不同 channel 不同 persona 才不會打架。
 - **`SessionManager.list(cwd)` 原生 project-scope**：session 檔按 cwd 分桶（`~/.pi/agent/sessions/--<cwd編碼>--/`），`list()` 只讀該桶，不會跨專案。傳入前先 `fs.realpathSync()` 正規化 cwd — symlink 路徑（macOS `/tmp` vs `/private/tmp`）會編碼成不同桶名。
 - **`L()` 每次都讀 `.tray-lang`**：不可把 `L(en, kr)` 結果 cache 進 module-scope 常數（會凍結語言）。`TOOL_LABELS` 用 `() => L(...)` thunks 就是這原因。
 - **DB schema 演進**：用 `ALTER TABLE ... ADD COLUMN`（try-catch on duplicate column），不要砍 column（legacy `session_id`、`auto_approve`、`output_style` 都保留）。

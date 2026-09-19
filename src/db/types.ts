@@ -4,6 +4,7 @@ export interface Project {
   channel_id: string;
   project_path: string;
   guild_id: string;
+  output_style: string | null; // persona name under rules/output-styles/ (default 'seed')
   created_at: string;
 }
 
